@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -17,7 +18,7 @@ _HISTORY_FILE = Path(__file__).parent / "_history.json"
 _HISTORY_RETENTION = 24 * 3600  # 保留 24 小时数据
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.15.2")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.16.0")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -52,6 +53,7 @@ class FiveMStatusPlugin(Star):
         self.webhook_port = push.get("webhook_port", 5765)
         self.webhook_token = push.get("webhook_token", "")
         self.event_buffer_seconds = max(push.get("event_buffer_seconds", 10), 0)
+        self.default_platform_id = "" if push.get("default_platform_id") is None else str(push.get("default_platform_id")).strip()
         self.admin_token: str = conn.get("admin_token", "")
 
         self._push_task: asyncio.Task | None = None
@@ -63,6 +65,7 @@ class FiveMStatusPlugin(Star):
         self._event_buffer: list[dict] = []
         self._flush_task: asyncio.Task | None = None
         self._cooldowns: dict[str, float] = {}
+        self._target_fail_counts: dict[str, int] = {}
         self._load_push_targets()
 
     # ── 推送目标持久化 ──
@@ -140,6 +143,8 @@ class FiveMStatusPlugin(Star):
             return False
         for saved in matched:
             self._push_targets.discard(saved)
+            self._target_fail_counts.pop(saved, None)
+            self._target_fail_counts.pop(self._resolve_target(saved), None)
         return True
 
     def _format_target_display(self, target: str) -> str:
@@ -170,6 +175,16 @@ class FiveMStatusPlugin(Star):
             return f"Webhook 实时推送 (端口 {self.webhook_port})"
         return f"轮询 /events ({self.auto_push_interval} 秒)"
 
+    def _describe_loop_reasons(self) -> str:
+        reasons = []
+        if self.auto_push_enabled:
+            reasons.append("定时状态推送")
+        if self.alert_enabled:
+            reasons.append("离线告警 / 趋势采集")
+        if self.event_notify_enabled and (self.notify_player_events or self.notify_server_events) and not self.webhook_enabled:
+            reasons.append("事件轮询")
+        return " + ".join(reasons) if reasons else "无需后台轮询"
+
     # ── 生命周期 ──
 
     def _needs_loop(self) -> bool:
@@ -183,10 +198,19 @@ class FiveMStatusPlugin(Star):
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=self.timeout)
         )
-        if self._needs_loop():
-            self._start_push_loop()
-        if self.webhook_enabled:
-            await self._start_webhook_server()
+        try:
+            if self._needs_loop():
+                self._start_push_loop()
+            if self.webhook_enabled:
+                await self._start_webhook_server()
+        except Exception as e:
+            logger.error(f"FiveM 插件初始化失败: {e}")
+            self._stop_push_loop()
+            await self._stop_webhook_server()
+            if self._session and not self._session.closed:
+                await self._session.close()
+            self._session = None
+            raise
 
     async def terminate(self):
         """插件卸载，停止所有后台服务"""
@@ -243,7 +267,16 @@ class FiveMStatusPlugin(Star):
                 if resp.status != 200:
                     logger.warning(f"FiveM API 返回 HTTP {resp.status}: {url}")
                     return None
-                return await resp.json()
+                text = await resp.text()
+                try:
+                    data = json.loads(text) if text else None
+                except json.JSONDecodeError as e:
+                    logger.error(f"FiveM API 返回了无效 JSON ({url}): {e}")
+                    return None
+                if not isinstance(data, dict):
+                    logger.warning(f"FiveM API 返回了非对象 JSON: {url}")
+                    return None
+                return data
         except aiohttp.ClientError as e:
             logger.error(f"FiveM API 请求失败: {e}")
             return None
@@ -260,16 +293,58 @@ class FiveMStatusPlugin(Star):
         self._ensure_session()
         try:
             async with self._session.post(url, json=payload, headers=headers) as resp:
-                data = await resp.json()
+                text = await resp.text()
+                data = None
+                if text:
+                    try:
+                        data = json.loads(text)
+                    except json.JSONDecodeError:
+                        data = None
                 if resp.status == 401:
                     return {"success": False, "message": "管理令牌验证失败，请检查 admin_token 与 FiveM 端 AdminToken 是否一致"}
-                return data
+                if resp.status >= 400:
+                    message = ""
+                    if isinstance(data, dict):
+                        message = self._safe_text(data.get("message")).strip()
+                    if not message:
+                        message = text.strip()
+                    if not message:
+                        message = f"FiveM 管理接口返回 HTTP {resp.status}"
+                    return {"success": False, "message": message}
+                if isinstance(data, dict):
+                    return data
+                if text.strip():
+                    return {"success": True, "message": text.strip()}
+                return {"success": False, "message": "FiveM 管理接口返回了空响应"}
         except aiohttp.ClientError as e:
             logger.error(f"FiveM Admin API 请求失败: {e}")
             return None
         except Exception as e:
             logger.error(f"FiveM Admin API 未知错误: {e}")
             return None
+
+    @staticmethod
+    def _safe_text(value: object) -> str:
+        return "" if value is None else str(value)
+
+    @staticmethod
+    def _safe_int(value: object, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _escape_md(value: object) -> str:
+        text = "" if value is None else str(value)
+        return text.replace("\\", "\\\\").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+    @staticmethod
+    def _apply_template(template: str, **values) -> str:
+        result = "" if template is None else str(template)
+        for key, value in values.items():
+            result = result.replace(f"{{{key}}}", "" if value is None else str(value))
+        return result
 
     # ── 状态文本格式化 ──
 
@@ -291,34 +366,42 @@ class FiveMStatusPlugin(Star):
 
     def _format_status_md(self, data: dict) -> str:
         """将 /status API 响应格式化为 Markdown"""
-        status = data["data"]
-        total = status.get("totalPlayers", 0)
-        max_players = status.get("maxPlayers", 0)
-        server_name = status.get("serverName", "")
+        status = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(status, dict):
+            return "# 🎮 FiveM 服务器状态\n\n⚠️ 服务器返回异常数据。"
+        total = self._safe_int(status.get("totalPlayers", 0))
+        max_players = self._safe_int(status.get("maxPlayers", 0))
+        server_name = self._safe_text(status.get("serverName", ""))
         uptime = status.get("uptime")
         lines = ["# 🎮 FiveM 服务器状态\n"]
         if server_name:
-            lines.append(f"**🏷️ {server_name}**\n")
+            lines.append(f"**🏷️ {self._escape_md(server_name)}**\n")
         lines.append(f"- 👥 在线人数: **{total} / {max_players}**")
         if uptime is not None:
-            lines.append(f"- ⏱️ 运行时长: {self._format_uptime(uptime)}")
+            lines.append(f"- ⏱️ 运行时长: {self._format_uptime(self._safe_int(uptime))}")
         jobs = status.get("jobs", [])
+        if not isinstance(jobs, list):
+            jobs = []
         if jobs:
             lines.append("\n## 📋 职业在线\n")
             lines.append("| 职业 | 在线 |")
             lines.append("|------|------|")
             for job in jobs:
-                name = job.get("label", job.get("name", "未知"))
-                online = job.get("online", 0)
+                if not isinstance(job, dict):
+                    continue
+                name = self._escape_md(job.get("label", job.get("name", "未知")))
+                online = self._safe_int(job.get("online", 0))
                 lines.append(f"| {name} | {online} 人 |")
         return "\n".join(lines)
 
     def _format_status(self, data: dict) -> str:
         """将 /status API 响应格式化为可读文本"""
-        status = data["data"]
-        total = status.get("totalPlayers", 0)
-        max_players = status.get("maxPlayers", 0)
-        server_name = status.get("serverName", "")
+        status = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(status, dict):
+            return "⚠️ FiveM 服务器返回异常数据。"
+        total = self._safe_int(status.get("totalPlayers", 0))
+        max_players = self._safe_int(status.get("maxPlayers", 0))
+        server_name = self._safe_text(status.get("serverName", ""))
         uptime = status.get("uptime")
 
         lines = [
@@ -328,14 +411,18 @@ class FiveMStatusPlugin(Star):
             lines.append(f"🏷️ {server_name}")
         lines.append(f"👥 在线人数: {total}/{max_players}")
         if uptime is not None:
-            lines.append(f"⏱️ 运行时长: {self._format_uptime(uptime)}")
+            lines.append(f"⏱️ 运行时长: {self._format_uptime(self._safe_int(uptime))}")
 
         jobs = status.get("jobs", [])
+        if not isinstance(jobs, list):
+            jobs = []
         if jobs:
             lines.append("📋 职业在线:")
             for job in jobs:
-                name = job.get("label", job.get("name", "未知"))
-                online = job.get("online", 0)
+                if not isinstance(job, dict):
+                    continue
+                name = self._safe_text(job.get("label", job.get("name", "未知")))
+                online = self._safe_int(job.get("online", 0))
                 lines.append(f"  • {name}: {online} 人")
 
         return "\n".join(lines)
@@ -356,7 +443,15 @@ class FiveMStatusPlugin(Star):
     def _start_push_loop(self):
         """启动定时推送循环"""
         if self._push_task is not None:
-            return
+            if not self._push_task.done():
+                return
+            try:
+                exc = self._push_task.exception()
+            except asyncio.CancelledError:
+                exc = None
+            if exc is not None:
+                logger.error(f"FiveM 定时推送任务已异常退出，正在重启: {exc}")
+            self._push_task = None
         self._push_task = asyncio.create_task(self._push_loop())
         logger.info(f"FiveM 定时推送已启动，间隔 {self.auto_push_interval} 秒")
 
@@ -369,16 +464,17 @@ class FiveMStatusPlugin(Star):
 
     async def _push_loop(self):
         """定时推送 + 离线告警主循环"""
-        try:
-            while True:
+        while True:
+            try:
                 await asyncio.sleep(self.auto_push_interval)
 
                 data = await self._request("/status")
                 ok = data is not None and data.get("success")
+                status = data.get("data") if isinstance(data, dict) else None
 
                 # ── 记录历史数据点（无论是否有推送目标都采集） ──
-                if ok:
-                    self._record_data_point(data["data"].get("totalPlayers", 0))
+                if ok and isinstance(status, dict):
+                    self._record_data_point(self._safe_int(status.get("totalPlayers", 0)))
 
                 if not self._push_targets:
                     continue
@@ -403,8 +499,10 @@ class FiveMStatusPlugin(Star):
                 # ── 玩家上下线事件通知 ──
                 if self.event_notify_enabled and (self.notify_player_events or self.notify_server_events) and not self.webhook_enabled and ok:
                     await self._poll_events()
-        except asyncio.CancelledError:
-            pass
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"FiveM 定时推送循环异常，下一轮将继续: {e}")
 
     async def _poll_events(self):
         """轮询 /events 端点，有新事件时推送通知"""
@@ -436,7 +534,12 @@ class FiveMStatusPlugin(Star):
     @staticmethod
     def _get_event_time(ev: dict) -> str:
         ts = ev.get("time")
-        return datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8))).strftime("%H:%M") if ts else "--:--"
+        if ts is None:
+            return "--:--"
+        try:
+            return datetime.fromtimestamp(float(ts), tz=timezone(timedelta(hours=8))).strftime("%H:%M")
+        except (TypeError, ValueError, OSError):
+            return "--:--"
 
     @staticmethod
     def _format_player_lines(events: list[dict]) -> list[str]:
@@ -473,16 +576,16 @@ class FiveMStatusPlugin(Star):
             t_str = self._get_event_time(ev)
 
             if etype == "announcement":
-                author = ev.get("author", "txAdmin")
-                message = ev.get("message", "")
+                author = self._safe_text(ev.get("author", "txAdmin"))
+                message = self._safe_text(ev.get("message", ""))
                 lines.append(f"  📢 管理员公告 ({author}): {message}")
 
             elif etype == "shutdown":
-                author = ev.get("author", "txAdmin")
-                delay = ev.get("delay", 0)
-                message = ev.get("message", "")
+                author = self._safe_text(ev.get("author", "txAdmin"))
+                delay = self._safe_int(ev.get("delay", 0))
+                message = self._safe_text(ev.get("message", ""))
                 delay_sec = round(delay / 1000) if delay else 0
-                line = self.shutdown_template.format(author=author, delay=delay_sec, message=message, time=t_str, at_all="{at_all}")
+                line = self._apply_template(self.shutdown_template, author=author, delay=delay_sec, message=message, time=t_str, at_all="{at_all}")
                 if message and "{message}" not in self.shutdown_template:
                     line += f": {message}"
                 lines.append(f"  {line}")
@@ -490,25 +593,25 @@ class FiveMStatusPlugin(Star):
                     has_at_all = True
 
             elif etype == "restart":
-                seconds = ev.get("secondsRemaining", 0)
-                minutes = round(seconds / 60)
-                line = self.restart_template.format(minutes=minutes, seconds=seconds, time=t_str, at_all="{at_all}")
+                seconds = self._safe_int(ev.get("secondsRemaining", 0))
+                minutes = math.ceil(seconds / 60) if seconds > 0 else 0
+                line = self._apply_template(self.restart_template, minutes=minutes, seconds=seconds, time=t_str, at_all="{at_all}")
                 lines.append(f"  {line}")
                 if "{at_all}" in self.restart_template:
                     has_at_all = True
 
             elif etype == "server_start":
-                sn = ev.get("serverName", "FiveM Server")
-                players = ev.get("totalPlayers", 0)
-                max_p = ev.get("maxPlayers", 0)
-                line = self.server_start_template.format(server_name=sn, time=t_str, players=players, max_players=max_p, at_all="{at_all}")
+                sn = self._safe_text(ev.get("serverName", "FiveM Server"))
+                players = self._safe_int(ev.get("totalPlayers", 0))
+                max_p = self._safe_int(ev.get("maxPlayers", 0))
+                line = self._apply_template(self.server_start_template, server_name=sn, time=t_str, players=players, max_players=max_p, at_all="{at_all}")
                 lines.append(f"  {line}")
                 if "{at_all}" in self.server_start_template:
                     has_at_all = True
 
             elif etype == "custom":
-                ctitle = ev.get("title", "自定义事件")
-                message = ev.get("message", "")
+                ctitle = self._safe_text(ev.get("title", "自定义事件"))
+                message = self._safe_text(ev.get("message", ""))
                 line = f"  🔔 {ctitle}"
                 if message:
                     line += f": {message}"
@@ -527,7 +630,7 @@ class FiveMStatusPlugin(Star):
 
     async def _send_alert(self):
         """发送离线告警纯文本通知"""
-        text = self.alert_template.format(count=self._fail_count, at_all="{at_all}")
+        text = self._apply_template(self.alert_template, count=self._fail_count, at_all="{at_all}")
         has_at_all = "{at_all}" in self.alert_template
         await self._broadcast_notification(text, has_at_all)
 
@@ -542,14 +645,23 @@ class FiveMStatusPlugin(Star):
 
     async def _flush_events(self):
         """等待缓冲窗口结束后，批量发送所有缓冲事件；若发送期间有新事件到达，循环处理"""
-        await asyncio.sleep(self.event_buffer_seconds)
-        while self._event_buffer:
-            events = self._event_buffer
-            self._event_buffer = []
-            await self._send_events(events)
+        try:
+            await asyncio.sleep(self.event_buffer_seconds)
+            while self._event_buffer:
+                events = self._event_buffer
+                self._event_buffer = []
+                try:
+                    await self._send_events(events)
+                except Exception as e:
+                    logger.error(f"FiveM 事件批量发送失败，已跳过本批次: {e}")
+        except asyncio.CancelledError:
+            pass
 
     async def _send_events(self, events: list[dict]):
         """格式化事件并广播到所有推送目标"""
+        events = [ev for ev in events if isinstance(ev, dict)]
+        if not events:
+            return
         if self.notify_server_events:
             text, has_at_all = self._build_server_notification(events)
             if text:
@@ -568,8 +680,12 @@ class FiveMStatusPlugin(Star):
         app.router.add_post('/webhook/fivem', self._handle_webhook)
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', self.webhook_port)
-        await site.start()
+        try:
+            site = web.TCPSite(runner, '0.0.0.0', self.webhook_port)
+            await site.start()
+        except Exception:
+            await runner.cleanup()
+            raise
         self._webhook_runner = runner
         logger.info(f"FiveM Webhook 服务已启动，监听 0.0.0.0:{self.webhook_port}")
 
@@ -600,6 +716,26 @@ class FiveMStatusPlugin(Star):
         await self._process_and_broadcast_events(events)
         return web.json_response({"ok": True, "pushed": len(events)})
 
+    def _select_target_platform_id(self) -> str | None:
+        try:
+            platforms = self.context.platform_manager.get_insts()
+            if not platforms:
+                return None
+            if self.default_platform_id:
+                for platform in platforms:
+                    pid = platform.meta().id
+                    if pid == self.default_platform_id:
+                        return pid
+                fallback_pid = platforms[0].meta().id
+                logger.warning(
+                    f"FiveM 插件：未找到配置的默认平台 {self.default_platform_id}，已回退到 {fallback_pid}"
+                )
+                return fallback_pid
+            return platforms[0].meta().id
+        except Exception as e:
+            logger.warning(f"FiveM 插件：获取可用平台实例失败: {e}")
+            return None
+
     def _resolve_target(self, target: str) -> str:
         """将纯群号解析为完整 UMO 格式，已是 UMO 则直接返回"""
         if ":" in target:
@@ -607,9 +743,8 @@ class FiveMStatusPlugin(Star):
         if not target.strip().isdigit():
             return target
         try:
-            platforms = self.context.platform_manager.get_insts()
-            if platforms:
-                pid = platforms[0].meta().id
+            pid = self._select_target_platform_id()
+            if pid:
                 return f"{pid}:GroupMessage:{target.strip()}"
         except Exception as e:
             logger.warning(f"FiveM 插件：无法为群号 {target} 构造 UMO: {e}")
@@ -642,15 +777,25 @@ class FiveMStatusPlugin(Star):
             resolved_targets.add(umo)
             if umo != target:
                 need_save = True
+                fail_count = self._target_fail_counts.pop(target, 0)
+                if fail_count > 0:
+                    self._target_fail_counts[umo] = fail_count
             try:
                 await self.context.send_message(umo, chain)
+                self._target_fail_counts.pop(umo, None)
             except Exception as e:
-                logger.error(f"消息发送失败 ({umo}): {e}")
+                fail_count = self._target_fail_counts.get(umo, 0) + 1
+                self._target_fail_counts[umo] = fail_count
+                logger.error(f"消息发送失败 ({umo}, 连续失败 {fail_count} 次): {e}")
 
         if need_save:
             self._push_targets = resolved_targets
             self._save_push_targets()
             logger.info(f"FiveM 插件：已将纯群号自动转换为 UMO 并回写配置")
+        self._target_fail_counts = {
+            target: count for target, count in self._target_fail_counts.items()
+            if target in resolved_targets
+        }
 
     # ── 指令组 /fivem ──
 
@@ -688,21 +833,26 @@ class FiveMStatusPlugin(Star):
         if not data.get("success"):
             yield event.plain_result("❌ 服务器返回异常数据。")
             return
-        players = data["data"]
+        players = data.get("data")
+        if not isinstance(players, list):
+            yield event.plain_result("❌ 服务器返回异常数据。")
+            return
         if not players:
             yield event.plain_result("当前没有玩家在线。")
             return
         fallback = [f"👥 在线玩家 ({len(players)} 人):"]
         md = [f"# 👥 在线玩家 ({len(players)} 人)\n", "| ID | 名称 | 职业 | 在线时长 |", "|----|------|------|----------|"]
         for p in players:
-            pid = p.get("id", "?")
-            name = p.get("name", "未知")
-            job_label = p.get("jobLabel", p.get("job", ""))
+            if not isinstance(p, dict):
+                continue
+            pid = self._safe_text(p.get("id", "?"))
+            name = self._safe_text(p.get("name", "未知"))
+            job_label = self._safe_text(p.get("jobLabel", p.get("job", "")))
             online_sec = p.get("onlineSeconds")
-            duration = self._format_uptime(online_sec) if online_sec is not None else None
+            duration = self._format_uptime(self._safe_int(online_sec)) if online_sec is not None else None
             suffix = f" ({duration})" if duration else ""
             fallback.append(f"  [{pid}] {name} — {job_label}{suffix}")
-            md.append(f"| {pid} | {name} | {job_label} | {duration or '-'} |")
+            md.append(f"| {self._escape_md(pid)} | {self._escape_md(name)} | {self._escape_md(job_label)} | {self._escape_md(duration or '-')} |")
         async for result in self._render_image(event, "\n".join(md), "\n".join(fallback)):
             yield result
 
@@ -726,19 +876,32 @@ class FiveMStatusPlugin(Star):
             return None, "❌ 无法连接到 FiveM 服务器，请稍后重试。"
 
         jobs = status_data.get("data", {}).get("jobs", [])
-        if not jobs:
+        if not isinstance(jobs, list) or not jobs:
             return None, "❌ 当前没有已配置的职业。"
+
+        normalized_jobs = []
+        for job in jobs:
+            if not isinstance(job, dict):
+                continue
+            name = self._safe_text(job.get("name", "")).strip()
+            if not name:
+                continue
+            label = self._safe_text(job.get("label", name)).strip() or name
+            normalized_jobs.append({"name": name, "label": label})
+
+        if not normalized_jobs:
+            return None, "❌ 当前没有可用的职业数据。"
 
         kw = keyword.lower()
 
         # 精确匹配（name 或 label）
-        for j in jobs:
+        for j in normalized_jobs:
             if kw == j["name"].lower() or kw == j["label"].lower():
                 return j["name"], None
 
         # 模糊匹配（label 或 name 包含关键词）
         matches = [
-            j for j in jobs
+            j for j in normalized_jobs
             if kw in j["label"].lower() or kw in j["name"].lower()
         ]
 
@@ -750,7 +913,7 @@ class FiveMStatusPlugin(Star):
             return None, f"⚠️ 匹配到多个职业，请更精确地输入:\n{options}"
 
         # 无匹配 → 列出所有可用职业
-        all_jobs = "\n".join(f"  • {j['label']}（{j['name']}）" for j in jobs)
+        all_jobs = "\n".join(f"  • {j['label']}（{j['name']}）" for j in normalized_jobs)
         return None, f"❌ 未找到匹配「{keyword}」的职业。可用职业:\n{all_jobs}"
 
     async def _do_job_query(self, event: AstrMessageEvent, job_keyword: str):
@@ -766,19 +929,26 @@ class FiveMStatusPlugin(Star):
         if not data.get("success"):
             yield event.plain_result("❌ 服务器返回异常数据。")
             return
-        job = data["data"]
-        label = job.get("label", job.get("name", job_keyword))
-        online = job.get("online", 0)
+        job = data.get("data")
+        if not isinstance(job, dict):
+            yield event.plain_result("❌ 服务器返回异常数据。")
+            return
+        label = self._safe_text(job.get("label", job.get("name", job_keyword)))
+        online = self._safe_int(job.get("online", 0))
         players = job.get("players", [])
+        if not isinstance(players, list):
+            players = []
         fallback = [f"👔 {label} ({online} 人在线):"]
-        md = [f"# 👔 {label} ({online} 人在线)\n"]
+        md = [f"# 👔 {self._escape_md(label)} ({online} 人在线)\n"]
         if players:
             md.extend(["| ID | 名称 |", "|----|------|"])
             for p in players:
-                pid = p.get("id", "?")
-                name = p.get("name", "未知")
+                if not isinstance(p, dict):
+                    continue
+                pid = self._safe_text(p.get("id", "?"))
+                name = self._safe_text(p.get("name", "未知"))
                 fallback.append(f"  [{pid}] {name}")
-                md.append(f"| {pid} | {name} |")
+                md.append(f"| {self._escape_md(pid)} | {self._escape_md(name)} |")
         else:
             fallback.append("  当前无人在线")
             md.append("当前无人在线")
@@ -805,21 +975,27 @@ class FiveMStatusPlugin(Star):
             return
         kw = keyword.lower()
         results = []
-        for p in data["data"]:
-            name = p.get("name", "")
+        players = data.get("data")
+        if not isinstance(players, list):
+            yield event.plain_result("❌ 服务器返回异常数据。")
+            return
+        for p in players:
+            if not isinstance(p, dict):
+                continue
+            name = self._safe_text(p.get("name", ""))
             if kw in name.lower():
                 results.append({
-                    "id": p.get("id", "?"),
+                    "id": self._safe_text(p.get("id", "?")),
                     "name": name,
-                    "job_label": p.get("jobLabel", p.get("job", "")),
+                    "job_label": self._safe_text(p.get("jobLabel", p.get("job", ""))),
                 })
         fallback = [f"🔍 搜索「{keyword}」 — 匹配 {len(results)} 人:"]
-        md = [f"# 🔍 搜索「{keyword}」 — 匹配 {len(results)} 人\n"]
+        md = [f"# 🔍 搜索「{self._escape_md(keyword)}」 — 匹配 {len(results)} 人\n"]
         if results:
             md.extend(["| ID | 名称 | 职业 |", "|----|------|------|"])
             for r in results:
                 fallback.append(f"  [{r['id']}] {r['name']} — {r['job_label']}")
-                md.append(f"| {r['id']} | {r['name']} | {r['job_label']} |")
+                md.append(f"| {self._escape_md(r['id'])} | {self._escape_md(r['name'])} | {self._escape_md(r['job_label'])} |")
         else:
             fallback.append("  未找到匹配的在线玩家。")
             md.append("未找到匹配的在线玩家。")
@@ -941,50 +1117,68 @@ class FiveMStatusPlugin(Star):
         health_ok = health_data is not None and health_data.get("status") == "ok"
         status_ok = status_data is not None and status_data.get("success")
         current_subscribed = self._has_push_target(event.unified_msg_origin)
+        loop_expected = self._needs_loop()
         loop_running = self._push_task is not None and not self._push_task.done()
         webhook_ready = not self.webhook_enabled or self._webhook_runner is not None
+        event_delivery = self._describe_event_delivery()
+        loop_reasons = self._describe_loop_reasons()
+        loop_status = "运行中" if loop_running else ("未启用" if not loop_expected else "未运行")
+        failed_targets = sum(1 for count in self._target_fail_counts.values() if count > 0)
 
         # ── 纯文本回退 ──
         lines = [
             "🩺 FiveM 插件自检",
             f"🔗 API /health: {'正常' if health_ok else '失败'}",
             f"📊 API /status: {'正常' if status_ok else '失败'}",
-            f"📡 事件通知: {self._describe_event_delivery()}",
+            f"📡 事件通知: {event_delivery}",
             f"🗂️ 通知范围: {self._describe_event_scope()}",
             f"📬 订阅目标: {len(self._push_targets)} 个",
             f"🙋 当前会话: {'已订阅' if current_subscribed else '未订阅'}",
-            f"⚙️ 后台任务: {'运行中' if loop_running else '未运行'}",
+            f"🧭 后台用途: {loop_reasons}",
+            f"⚙️ 后台任务: {loop_status}",
         ]
+        if failed_targets:
+            lines.append(f"🚫 发送失败目标: {failed_targets} 个")
 
         if self.webhook_enabled:
             lines.append(f"🌐 Webhook 监听: {'已启动' if webhook_ready else '未启动'}")
 
         # ── 检查项 ──
         checks = [
-            ("🔗", "API /health", "正常" if health_ok else "失败", health_ok),
-            ("📊", "API /status", "正常" if status_ok else "失败", status_ok),
-            ("📡", "事件通知", self._describe_event_delivery(), self.event_notify_enabled),
-            ("🗂️", "通知范围", self._describe_event_scope(), True),
-            ("📬", "订阅目标", f"{len(self._push_targets)} 个", bool(self._push_targets)),
-            ("🙋", "当前会话", "已订阅" if current_subscribed else "未订阅", current_subscribed),
-            ("⚙️", "后台任务", "运行中" if loop_running else "未运行", loop_running),
+            ("🔗", "API /health", "正常" if health_ok else "失败", "✅" if health_ok else "❌"),
+            ("📊", "API /status", "正常" if status_ok else "失败", "✅" if status_ok else "❌"),
+            ("📡", "事件通知", event_delivery, "ℹ️" if not self.event_notify_enabled else "✅"),
+            ("🗂️", "通知范围", self._describe_event_scope(), "ℹ️" if not self.event_notify_enabled else "✅"),
+            ("📬", "订阅目标", f"{len(self._push_targets)} 个", "ℹ️" if not self._push_targets else "✅"),
+            ("🙋", "当前会话", "已订阅" if current_subscribed else "未订阅", "✅" if current_subscribed else "ℹ️"),
+            ("🧭", "后台用途", loop_reasons, "ℹ️" if not loop_expected else "✅"),
+            ("⚙️", "后台任务", loop_status, "✅" if (not loop_expected or loop_running) else "⚠️"),
         ]
+        if failed_targets:
+            checks.append(("🚫", "发送失败目标", f"{failed_targets} 个", "⚠️"))
         if self.webhook_enabled:
-            checks.append(("🌐", "Webhook", "已启动" if webhook_ready else "未启动", webhook_ready))
+            checks.append(("🌐", "Webhook", "已启动" if webhook_ready else "未启动", "✅" if webhook_ready else "❌"))
 
         issues = []
+        tips = []
         if not health_ok:
             issues.append("FiveM /health 不可达，请检查 server_url、网络与 WhitelistIPs。")
         elif not status_ok:
             issues.append("FiveM /status 未返回 success，请检查资源端状态输出是否正常。")
         if self.event_notify_enabled and not (self.notify_player_events or self.notify_server_events):
             issues.append("事件通知总开关已开启，但玩家事件和服务器事件都已关闭。")
+        if loop_expected and not loop_running:
+            issues.append("后台任务未运行，请检查插件初始化日志与后台循环异常。")
         if self.webhook_enabled and not webhook_ready:
             issues.append("Webhook 已启用但监听服务未启动，请检查端口占用和插件初始化日志。")
+        if failed_targets:
+            issues.append("存在发送失败的推送目标，请检查目标平台可用性、群会话状态或订阅目标配置。")
         if not self._push_targets:
-            issues.append("当前没有任何推送目标，可通过 /fivem 订阅 添加。")
+            tips.append("当前没有任何推送目标，如需接收推送可通过 /fivem 订阅 添加。")
         elif not current_subscribed:
-            issues.append("当前会话未订阅推送，如需在本群接收通知，请执行 /fivem 订阅。")
+            tips.append("当前会话未订阅推送，如需在本群接收通知，请执行 /fivem 订阅。")
+        if not self.event_notify_enabled:
+            tips.append("事件通知当前已关闭，如需接收玩家动态或服务器通知，请开启 event_notify_enabled。")
 
         if issues:
             lines.append("")
@@ -993,18 +1187,27 @@ class FiveMStatusPlugin(Star):
                 lines.append(f"  • {issue}")
         else:
             lines.append("")
-            lines.append("✅ 未发现明显配置问题。")
+            lines.append("✅ 未发现明显运行故障。")
+
+        if tips:
+            lines.append("")
+            lines.append("💡 配置提醒:")
+            for tip in tips:
+                lines.append(f"  • {tip}")
 
         md = ["# 🩺 FiveM 插件自检\n", "| 项目 | 状态 |", "|------|------|"]
-        for icon, label, value, ok in checks:
-            status_icon = "✅" if ok else "⚠️"
+        for icon, label, value, status_icon in checks:
             md.append(f"| {icon} {label} | {status_icon} {value} |")
         if issues:
             md.append("\n> **⚠️ 建议关注:**")
             for issue in issues:
                 md.append(f"> - {issue}")
         else:
-            md.append("\n✅ 未发现明显配置问题。")
+            md.append("\n✅ 未发现明显运行故障。")
+        if tips:
+            md.append("\n> **💡 配置提醒:**")
+            for tip in tips:
+                md.append(f"> - {tip}")
         async for result in self._render_image(event, "\n".join(md), "\n".join(lines)):
             yield result
 
@@ -1064,13 +1267,16 @@ class FiveMStatusPlugin(Star):
             f"📬 推送订阅列表 ({len(self._push_targets)} 个):",
             f"📡 事件通知: {self._describe_event_delivery()}",
             f"🗂️ 通知范围: {self._describe_event_scope()}",
+            f"🧭 后台用途: {self._describe_loop_reasons()}",
         ]
         for i, target in enumerate(sorted(self._push_targets), 1):
             display = self._format_target_display(target)
+            fail_count = self._target_fail_counts.get(target, 0)
+            fail_suffix = f"（连续失败 {fail_count} 次）" if fail_count > 0 else ""
             if display == target:
-                lines.append(f"  {i}. {display}")
+                lines.append(f"  {i}. {display}{fail_suffix}")
             else:
-                lines.append(f"  {i}. {display} → {target}")
+                lines.append(f"  {i}. {display} → {target}{fail_suffix}")
         yield event.plain_result("\n".join(lines))
 
     # ── 远程管理命令 ──

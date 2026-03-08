@@ -39,7 +39,7 @@
             "auto_push_interval": {
                 "description": "推送间隔（秒）",
                 "type": "int",
-                "hint": "定时状态推送 / 事件轮询的时间间隔，最小 60 秒；启用 Webhook 实时推送后将不再轮询事件",
+                "hint": "定时状态推送 / 事件轮询的时间间隔，最小 60 秒；启用离线告警后，也会按该间隔后台轮询 /status 用于离线检测与趋势采集；启用 Webhook 实时推送后将不再轮询事件",
                 "default": 300
             },
             "event_notify_enabled": {
@@ -65,6 +65,12 @@
                 "type": "list",
                 "hint": "可直接填写 QQ 群号（如 1072122007），插件会自动转换为完整格式；也可在群中发送 /fivem 订阅 自动添加",
                 "default": []
+            },
+            "default_platform_id": {
+                "description": "默认消息平台 ID",
+                "type": "string",
+                "hint": "当 push_targets 中使用纯群号且 AstrBot 配置了多个平台适配器时，用于指定构造 UMO 的默认平台 ID；留空则自动取第一个可用平台",
+                "default": ""
             },
             "webhook_enabled": {
                 "description": "启用 Webhook 实时推送",
@@ -100,7 +106,7 @@
             "alert_enabled": {
                 "description": "启用离线告警",
                 "type": "bool",
-                "hint": "开启后，当服务器连续不可达时自动向订阅会话推送告警",
+                "hint": "开启后，当服务器连续不可达时自动向订阅会话推送告警；即使未开启定时状态推送，也会按 auto_push_interval 后台轮询 /status 用于离线检测与趋势采集",
                 "default": true
             },
             "alert_threshold": {

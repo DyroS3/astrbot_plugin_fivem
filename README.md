@@ -2,7 +2,7 @@
 
 通过 QQ 查询和管理 FiveM 服务器，支持远程管理与 AI 自然语言查询。
 
-本插件需要配合 FiveM 端 `fivem-server-status` 资源一起使用，兼容当前配套版本 `v1.15.2`。
+本插件需要配合 FiveM 端 `fivem-server-status` 资源一起使用，兼容当前配套版本 `v1.16.0`。
 
 ## 架构与依赖关系
 
@@ -27,18 +27,19 @@
 
 #### 推送设置
 - **auto_push_enabled** — 是否启用定时状态推送（默认关闭）
-- **auto_push_interval** — 定时状态推送 / 事件轮询间隔秒数（默认 300，最小 60）
+- **auto_push_interval** — 定时状态推送 / 事件轮询间隔秒数（默认 300，最小 60；启用离线告警后，即使未开启定时推送，也会按该间隔后台轮询 `/status` 用于离线检测与趋势采集）
 - **event_notify_enabled** — 事件通知总开关：玩家动态 + txAdmin 事件（默认关闭）
 - **notify_player_events** — 是否推送玩家动态（连接 / 加入 / 离开）
 - **notify_server_events** — 是否推送服务器通知（txAdmin 公告 / 关服 / 重启 / 启动）
 - **push_targets** — 推送目标列表（可直接填写 QQ 群号，插件会自动转换；也可通过 `/fivem 订阅` 命令自动添加）
+- **default_platform_id** — 当 `push_targets` 中使用纯群号且 AstrBot 配置了多个平台适配器时，用于指定构造 UMO 的默认平台 ID；留空则自动取第一个可用平台
 - **webhook_enabled** — 是否启用 Webhook 实时推送（默认关闭；开启后事件通知改为实时推送，不再轮询）
 - **webhook_port** — Webhook 监听端口（默认 5765）
 - **webhook_token** — Webhook 认证 Token（可选，留空不验证）
 - **event_buffer_seconds** — 事件聚合窗口秒数（默认 10；多人同时上下线时合并为一条消息，设 0 则立即发送）
 
 #### 显示设置
-- **render_image** — 查询类命令回复是否渲染为图片卡片（默认开启；需 AstrBot 内置 Playwright 可用，关闭后回退纯文本）
+- **render_image** — 查询类命令回复是否渲染为图片卡片（默认开启；使用 AstrBot `text_to_image()` 文转图能力，关闭后回退纯文本）
 - **server_start_template** — 服务器启动通知模板（占位符: `{server_name}` `{time}` `{players}` `{max_players}` `{at_all}`）
 - **shutdown_template** — 服务器关闭通知模板（占位符: `{author}` `{delay}` `{message}` `{time}` `{at_all}`）
 - **restart_template** — 计划重启通知模板（占位符: `{minutes}` `{seconds}` `{time}` `{at_all}`）
@@ -47,7 +48,7 @@
 > 💡 在任意模板中加入 `{at_all}` 占位符即可自动 @全体成员，不加则不 @。
 
 #### 告警设置
-- **alert_enabled** — 是否启用离线告警（默认开启）
+- **alert_enabled** — 是否启用离线告警（默认开启；开启后即使未开启定时状态推送，也会按 `auto_push_interval` 后台轮询 `/status`）
 - **alert_threshold** — 连续检测失败多少次后触发告警（默认 3）
 
 #### 权限设置
@@ -64,7 +65,7 @@
 | `/fivem 查找 <名>` | 模糊搜索在线玩家 |
 | `/fivem 趋势` | 24 小时在线人数趋势图 |
 | `/fivem 检测` | 服务器健康检测 |
-| `/fivem 自检` | 检查 API、Webhook、订阅与通知配置 🔒 |
+| `/fivem 自检` | 检查 API、Webhook、后台任务与失败目标，并区分运行故障与配置提醒 🔒 |
 | `/fivem 订阅` | 订阅当前会话接收推送/告警/事件通知 🔒 |
 | `/fivem 退订` | 取消当前会话的推送订阅 🔒 |
 | `/fivem 订阅列表` | 查看所有推送目标 🔒 |
@@ -243,7 +244,7 @@ exports['fivem-server-status']:pushEvent({
 
 ## AI 自然语言查询
 
-插件注册了 6 个 LLM 工具，用户可用自然语言提问，AstrBot 的 LLM 会自动调用对应工具：
+插件注册了 5 个 LLM 工具，用户可用自然语言提问，AstrBot 的 LLM 会自动调用对应工具：
 
 | 自然语言示例 | 自动调用的工具 |
 |---|---|
