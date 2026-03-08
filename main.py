@@ -18,7 +18,7 @@ _HISTORY_FILE = Path(__file__).parent / "_history.json"
 _HISTORY_RETENTION = 24 * 3600  # 保留 24 小时数据
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.15.1")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.15.2")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -228,13 +228,17 @@ class FiveMStatusPlugin(Star):
 
     # ── HTTP 请求 ──
 
-    async def _request(self, path: str) -> dict | None:
-        """向 FiveM 服务器状态 API 发起 GET 请求"""
-        url = f"{self.server_url.rstrip('/')}{path}"
+    def _ensure_session(self):
+        """确保 aiohttp 会话可用"""
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=self.timeout)
             )
+
+    async def _request(self, path: str) -> dict | None:
+        """向 FiveM 服务器状态 API 发起 GET 请求"""
+        url = f"{self.server_url.rstrip('/')}{path}"
+        self._ensure_session()
         try:
             async with self._session.get(url) as resp:
                 if resp.status != 200:
@@ -254,10 +258,7 @@ class FiveMStatusPlugin(Star):
             return {"success": False, "message": "未配置 admin_token，无法执行远程管理操作"}
         url = f"{self.server_url.rstrip('/')}{path}"
         headers = {"Authorization": f"Bearer {self.admin_token}"}
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=self.timeout)
-            )
+        self._ensure_session()
         try:
             async with self._session.post(url, json=payload, headers=headers) as resp:
                 data = await resp.json()
@@ -859,8 +860,8 @@ class FiveMStatusPlugin(Star):
         ]
 
         # 构建 SVG 图表
-        chart_w, chart_h = 440, 180
-        margin_l, margin_b = 40, 24
+        chart_w, chart_h = 1060, 360
+        margin_l, margin_b = 60, 40
         y_max = max(max_count, 1)
         n = len(points)
         svg_points = []
@@ -876,17 +877,17 @@ class FiveMStatusPlugin(Star):
 
         total_w = chart_w + margin_l
         svg_parts = [
-            f'<svg width="{total_w}" height="{chart_h}" viewBox="0 0 {total_w} {chart_h}" xmlns="http://www.w3.org/2000/svg" style="background:#f6f8fa;border-radius:8px;border:1px solid #d1d9e0;margin-top:12px;display:block">',
-            f'  <text x="4" y="14" font-size="11" fill="#656d76" font-family="sans-serif">{y_max}</text>',
-            f'  <text x="4" y="{chart_h - margin_b}" font-size="11" fill="#656d76" font-family="sans-serif">0</text>',
+            f'<svg width="{total_w}" height="{chart_h}" viewBox="0 0 {total_w} {chart_h}" xmlns="http://www.w3.org/2000/svg" style="background:#f6f8fa;border-radius:12px;border:1px solid #d1d9e0;margin-top:16px;display:block">',
+            f'  <text x="8" y="24" font-size="20" fill="#656d76" font-family="sans-serif">{y_max}</text>',
+            f'  <text x="8" y="{chart_h - margin_b}" font-size="20" fill="#656d76" font-family="sans-serif">0</text>',
             f'  <line x1="{margin_l}" y1="0" x2="{margin_l}" y2="{chart_h - margin_b}" stroke="#d1d9e0" stroke-width="1"/>',
             f'  <line x1="{margin_l}" y1="{chart_h - margin_b}" x2="{total_w}" y2="{chart_h - margin_b}" stroke="#d1d9e0" stroke-width="1"/>',
-            f'  <polyline points="{polyline}" fill="none" stroke="#1f883d" stroke-width="2" stroke-linejoin="round"/>',
+            f'  <polyline points="{polyline}" fill="none" stroke="#1f883d" stroke-width="3" stroke-linejoin="round"/>',
         ]
         for sp in svg_points:
-            svg_parts.append(f'  <circle cx="{sp["x"]}" cy="{sp["y"]}" r="2.5" fill="#1f883d"/>')
+            svg_parts.append(f'  <circle cx="{sp["x"]}" cy="{sp["y"]}" r="4" fill="#1f883d"/>')
         for xl in x_labels:
-            svg_parts.append(f'  <text x="{xl["x"]}" y="{chart_h - 4}" font-size="10" fill="#656d76" text-anchor="middle" font-family="sans-serif">{xl["text"]}</text>')
+            svg_parts.append(f'  <text x="{xl["x"]}" y="{chart_h - 8}" font-size="18" fill="#656d76" text-anchor="middle" font-family="sans-serif">{xl["text"]}</text>')
         svg_parts.append('</svg>')
         svg_str = "\n".join(svg_parts)
 
@@ -1237,7 +1238,7 @@ class FiveMStatusPlugin(Star):
         history = self._load_history()
         result = self._build_trend_data(history)
         if result is None:
-            yield event.plain_result("� 历史数据不足，至少需要 2 个数据点才能生成趋势图。")
+            yield event.plain_result("📊 历史数据不足，至少需要 2 个数据点才能生成趋势图。")
             return
         md_text, fallback = result
         async for r in self._render_image(event, md_text, "\n".join(fallback)):
