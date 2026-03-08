@@ -21,7 +21,7 @@ _HISTORY_FILE = Path(__file__).parent / "_history.json"
 _HISTORY_RETENTION = 24 * 3600  # 保留 24 小时数据
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询 FiveM 服务器在线状态", "1.10.0")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.11.0")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -52,6 +52,7 @@ class FiveMStatusPlugin(Star):
         self.webhook_port = push.get("webhook_port", 5765)
         self.webhook_token = push.get("webhook_token", "")
         self.event_buffer_seconds = max(push.get("event_buffer_seconds", 10), 0)
+        self.admin_token: str = conn.get("admin_token", "")
 
         self._push_task: asyncio.Task | None = None
         self._push_targets: set[str] = set()
@@ -244,6 +245,32 @@ class FiveMStatusPlugin(Star):
             return None
         except Exception as e:
             logger.error(f"FiveM API 未知错误: {e}")
+            return None
+
+    async def _post_admin(self, path: str, payload: dict) -> dict | None:
+        """向 FiveM 服务器管理 API 发起 POST 请求"""
+        if not self.admin_token:
+            return {"success": False, "message": "未配置 admin_token，无法执行远程管理操作"}
+        url = f"{self.server_url.rstrip('/')}{path}"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.admin_token}",
+        }
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=self.timeout)
+            )
+        try:
+            async with self._session.post(url, json=payload, headers=headers) as resp:
+                data = await resp.json()
+                if resp.status == 401:
+                    return {"success": False, "message": "管理令牌验证失败，请检查 admin_token 与 FiveM 端 AdminToken 是否一致"}
+                return data
+        except aiohttp.ClientError as e:
+            logger.error(f"FiveM Admin API 请求失败: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"FiveM Admin API 未知错误: {e}")
             return None
 
     # ── 状态文本格式化 ──
@@ -745,16 +772,10 @@ class FiveMStatusPlugin(Star):
         async for result in self._render_image(event, TMPL_SEARCH, tmpl_data, "\n".join(lines)):
             yield result
 
-    @fivem.command("趋势")
-    async def trend(self, event: AstrMessageEvent):
-        """查看最近 24 小时在线人数趋势图"""
-        if cd := self._check_cooldown(event):
-            yield event.plain_result(cd)
-            return
-        history = self._load_history()
+    def _build_trend_data(self, history: list[dict]) -> tuple[dict, list[str]] | None:
+        """将历史数据点构建为趋势模板数据和纯文本行，数据不足时返回 None"""
         if len(history) < 2:
-            yield event.plain_result("📊 历史数据不足，至少需要 2 个数据点才能生成趋势图。\n提示：数据在定时推送轮询时自动采集。")
-            return
+            return None
 
         tz = timezone(timedelta(hours=8))
         points = []
@@ -774,7 +795,6 @@ class FiveMStatusPlugin(Star):
             f"  📌 当前: {counts[-1]} 人",
         ]
 
-        # ── 预计算 SVG 折线坐标 ──
         chart_w, chart_h = 440, 180
         margin_l, margin_b = 40, 24
         y_max = max(max_count, 1)
@@ -785,7 +805,6 @@ class FiveMStatusPlugin(Star):
             y = chart_h - (p["count"] / y_max) * (chart_h - margin_b)
             svg_points.append({"x": round(x, 1), "y": round(y, 1), "count": p["count"], "label": p["label"]})
 
-        # 选取均匀分布的时间标签（最多 6 个）
         label_count = min(6, n)
         label_indices = [round(i * (n - 1) / max(label_count - 1, 1)) for i in range(label_count)]
         x_labels = [{"x": svg_points[i]["x"], "text": svg_points[i]["label"]} for i in label_indices]
@@ -807,8 +826,22 @@ class FiveMStatusPlugin(Star):
             "current": counts[-1],
             "total_points": len(points),
         }
-        async for result in self._render_image(event, TMPL_TREND, tmpl_data, "\n".join(lines)):
-            yield result
+        return tmpl_data, lines
+
+    @fivem.command("趋势")
+    async def trend(self, event: AstrMessageEvent):
+        """查看最近 24 小时在线人数趋势图"""
+        if cd := self._check_cooldown(event):
+            yield event.plain_result(cd)
+            return
+        history = self._load_history()
+        result = self._build_trend_data(history)
+        if result is None:
+            yield event.plain_result("📊 历史数据不足，至少需要 2 个数据点才能生成趋势图。\n提示：数据在定时推送轮询时自动采集。")
+            return
+        tmpl_data, lines = result
+        async for r in self._render_image(event, TMPL_TREND, tmpl_data, "\n".join(lines)):
+            yield r
 
     @fivem.command("检测")
     async def health_check(self, event: AstrMessageEvent):
@@ -960,6 +993,65 @@ class FiveMStatusPlugin(Star):
                 lines.append(f"  {i}. {display} → {target}")
         yield event.plain_result("\n".join(lines))
 
+    # ── 远程管理命令 ──
+
+    @fivem.command("公告")
+    async def admin_announce(self, event: AstrMessageEvent, content: str = ""):
+        """从 QQ 发送公告到游戏内（需管理员权限）"""
+        if not self._is_admin(event):
+            yield event.plain_result("🚫 权限不足，仅管理员可执行此操作。")
+            return
+        if not content.strip():
+            yield event.plain_result("用法: /fivem 公告 <内容>")
+            return
+        result = await self._post_admin("/admin/announce", {"message": content.strip(), "author": "QQ管理"})
+        if result is None:
+            yield event.plain_result("❌ 无法连接到 FiveM 服务器。")
+            return
+        if result.get("success"):
+            yield event.plain_result(f"📢 公告已发送到游戏内:\n{content.strip()}")
+        else:
+            yield event.plain_result(f"❌ 公告发送失败: {result.get('message', '未知错误')}")
+
+    @fivem.command("广播")
+    async def admin_broadcast(self, event: AstrMessageEvent, content: str = ""):
+        """从 QQ 发送聊天广播到游戏内（需管理员权限）"""
+        if not self._is_admin(event):
+            yield event.plain_result("🚫 权限不足，仅管理员可执行此操作。")
+            return
+        if not content.strip():
+            yield event.plain_result("用法: /fivem 广播 <内容>")
+            return
+        result = await self._post_admin("/admin/broadcast", {"message": content.strip(), "author": "QQ管理"})
+        if result is None:
+            yield event.plain_result("❌ 无法连接到 FiveM 服务器。")
+            return
+        if result.get("success"):
+            yield event.plain_result(f"📣 广播已发送到游戏内:\n{content.strip()}")
+        else:
+            yield event.plain_result(f"❌ 广播发送失败: {result.get('message', '未知错误')}")
+
+    @fivem.command("踢人")
+    async def admin_kick(self, event: AstrMessageEvent, target: str = "", reason: str = ""):
+        """从 QQ 远程踢出游戏内玩家（需管理员权限）"""
+        if not self._is_admin(event):
+            yield event.plain_result("🚫 权限不足，仅管理员可执行此操作。")
+            return
+        if not target.strip():
+            yield event.plain_result("用法: /fivem 踢人 <玩家ID或名称> [原因]")
+            return
+        payload = {"target": target.strip()}
+        if reason.strip():
+            payload["reason"] = reason.strip()
+        result = await self._post_admin("/admin/kick", payload)
+        if result is None:
+            yield event.plain_result("❌ 无法连接到 FiveM 服务器。")
+            return
+        if result.get("success"):
+            yield event.plain_result(f"✅ {result.get('message', '操作成功')}")
+        else:
+            yield event.plain_result(f"❌ {result.get('message', '操作失败')}")
+
     @fivem.command("帮助")
     async def show_help(self, event: AstrMessageEvent):
         """显示所有可用指令"""
@@ -981,6 +1073,11 @@ class FiveMStatusPlugin(Star):
             "  /fivem 退订         — 取消推送订阅 🔒",
             "  /fivem 订阅列表     — 查看所有推送目标 🔒",
             "",
+            "远程管理命令:",
+            "  /fivem 公告 <内容>  — 发送公告到游戏内 🔒",
+            "  /fivem 广播 <内容>  — 发送聊天广播到游戏内 🔒",
+            "  /fivem 踢人 <目标>  — 远程踢出游戏内玩家 🔒",
+            "",
             "🔒 = 需要管理员权限",
             "提示：推送目标也可在 WebUI 插件配置中直接管理，事件通知范围可分别控制玩家动态和服务器通知。",
         ]
@@ -1000,7 +1097,139 @@ class FiveMStatusPlugin(Star):
                 {"usage": "/fivem 订阅", "desc": "订阅当前会话接收推送"},
                 {"usage": "/fivem 退订", "desc": "取消推送订阅"},
                 {"usage": "/fivem 订阅列表", "desc": "查看所有推送目标"},
+                {"usage": "/fivem 公告 <内容>", "desc": "发送公告到游戏内"},
+                {"usage": "/fivem 广播 <内容>", "desc": "发送聊天广播到游戏内"},
+                {"usage": "/fivem 踢人 <目标>", "desc": "远程踢出游戏内玩家"},
             ],
         }
         async for result in self._render_image(event, TMPL_HELP, tmpl_data, "\n".join(lines)):
             yield result
+
+    # ── AI 自然语言查询工具 ──
+
+    @filter.llm_tool(name="fivem_server_status")
+    async def tool_server_status(self, event: AstrMessageEvent):
+        '''查询 FiveM 游戏服务器的在线状态，包括在线人数、各职业在线人数、服务器运行时长等信息。
+
+        Args:
+        '''
+        data = await self._request("/status")
+        if data is None:
+            yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
+            return
+        if not data.get("success"):
+            yield event.plain_result("❌ 服务器返回异常数据。")
+            return
+        tmpl_data = self._build_status_tmpl_data(data)
+        async for result in self._render_image(event, TMPL_STATUS, tmpl_data, self._format_status(data)):
+            yield result
+
+    @filter.llm_tool(name="fivem_player_list")
+    async def tool_player_list(self, event: AstrMessageEvent):
+        '''查询 FiveM 游戏服务器当前所有在线玩家列表，包括玩家 ID、名称、职业和在线时长。
+
+        Args:
+        '''
+        data = await self._request("/players")
+        if data is None:
+            yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
+            return
+        if not data.get("success"):
+            yield event.plain_result("❌ 服务器返回异常数据。")
+            return
+        players = data["data"]
+        if not players:
+            yield event.plain_result("当前没有玩家在线。")
+            return
+        lines = [f"👥 在线玩家 ({len(players)} 人):"]
+        tmpl_players = []
+        for p in players:
+            pid = p.get("id", "?")
+            name = p.get("name", "未知")
+            job_label = p.get("jobLabel", p.get("job", ""))
+            online_sec = p.get("onlineSeconds")
+            duration = self._format_uptime(online_sec) if online_sec is not None else None
+            suffix = f" ({duration})" if duration else ""
+            lines.append(f"  [{pid}] {name} — {job_label}{suffix}")
+            tmpl_players.append({"id": pid, "name": name, "job_label": job_label, "duration": duration})
+        async for result in self._render_image(event, TMPL_PLAYERS, {"players": tmpl_players}, "\n".join(lines)):
+            yield result
+
+    @filter.llm_tool(name="fivem_job_query")
+    async def tool_job_query(self, event: AstrMessageEvent, job_keyword: str):
+        '''查询 FiveM 游戏服务器中指定职业的在线玩家列表。支持模糊匹配职业名称，如"警察"、"医生"、"出租车"等。
+
+        Args:
+            job_keyword(string): 要查询的职业名称或关键词，如 police、警察、ambulance、医疗 等
+        '''
+        job_name, err = await self._resolve_job_name(job_keyword)
+        if err:
+            yield event.plain_result(err)
+            return
+        data = await self._request(f"/job/{job_name}")
+        if data is None:
+            yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
+            return
+        if not data.get("success"):
+            yield event.plain_result("❌ 服务器返回异常数据。")
+            return
+        job = data["data"]
+        label = job.get("label", job_name)
+        players = job.get("players", [])
+        lines = [f"👔 {label} 在线: {len(players)} 人"]
+        if not players:
+            lines.append("  当前没有该职业的在线玩家。")
+        else:
+            for p in players:
+                lines.append(f"  [{p.get('id', '?')}] {p.get('name', '未知')}")
+        tmpl_data = {"label": label, "online": len(players), "players": players}
+        async for result in self._render_image(event, TMPL_JOB, tmpl_data, "\n".join(lines)):
+            yield result
+
+    @filter.llm_tool(name="fivem_player_search")
+    async def tool_player_search(self, event: AstrMessageEvent, player_name: str):
+        '''在 FiveM 游戏服务器中搜索指定名称的在线玩家。支持模糊匹配玩家名称。
+
+        Args:
+            player_name(string): 要搜索的玩家名称或关键词
+        '''
+        data = await self._request("/players")
+        if data is None:
+            yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
+            return
+        if not data.get("success"):
+            yield event.plain_result("❌ 服务器返回异常数据。")
+            return
+        keyword = player_name.strip().lower()
+        matches = [p for p in data["data"] if keyword in p.get("name", "").lower()]
+        if not matches:
+            yield event.plain_result(f"🔍 未找到匹配 \"{player_name}\" 的在线玩家。")
+            return
+        lines = [f"🔍 搜索 \"{player_name}\" 匹配到 {len(matches)} 人:"]
+        tmpl_players = []
+        for p in matches:
+            pid = p.get("id", "?")
+            name = p.get("name", "未知")
+            job_label = p.get("jobLabel", p.get("job", ""))
+            online_sec = p.get("onlineSeconds")
+            duration = self._format_uptime(online_sec) if online_sec is not None else None
+            suffix = f" ({duration})" if duration else ""
+            lines.append(f"  [{pid}] {name} — {job_label}{suffix}")
+            tmpl_players.append({"id": pid, "name": name, "job_label": job_label, "duration": duration})
+        async for result in self._render_image(event, TMPL_SEARCH, {"keyword": player_name, "players": tmpl_players}, "\n".join(lines)):
+            yield result
+
+    @filter.llm_tool(name="fivem_trend")
+    async def tool_trend(self, event: AstrMessageEvent):
+        '''查看 FiveM 游戏服务器过去 24 小时的在线人数趋势图，展示历史在线人数变化曲线。
+
+        Args:
+        '''
+        history = self._load_history()
+        result = self._build_trend_data(history)
+        if result is None:
+            yield event.plain_result("� 历史数据不足，至少需要 2 个数据点才能生成趋势图。")
+            return
+        tmpl_data, lines = result
+        async for r in self._render_image(event, TMPL_TREND, tmpl_data, "\n".join(lines)):
+            yield r

@@ -16,6 +16,12 @@
                 "type": "int",
                 "hint": "向 FiveM 服务器发起 HTTP 请求的超时时间",
                 "default": 10
+            },
+            "admin_token": {
+                "description": "远程管理令牌",
+                "type": "string",
+                "hint": "用于从 QQ 远程执行管理操作（公告/广播/踢人），需与 FiveM 端 config.lua 中的 AdminToken 保持一致；留空则禁用远程管理功能",
+                "default": ""
             }
         }
     },

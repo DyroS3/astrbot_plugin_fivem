@@ -1,13 +1,13 @@
 # AstrBot FiveM 服务器状态插件
 
-通过 QQ 查询 FiveM 服务器在线状态、职业人数等信息，并接收服务器事件通知。
+通过 QQ 查询和管理 FiveM 服务器，支持远程管理与 AI 自然语言查询。
 
-本插件需要配合 FiveM 端 `fivem-server-status` 资源一起使用，兼容当前配套版本 `v1.10.0`。
+本插件需要配合 FiveM 端 `fivem-server-status` 资源一起使用，兼容当前配套版本 `v1.11.0`。
 
 ## 架构与依赖关系
 
-- FiveM 端负责提供 `/status`、`/players`、`/job/:name`、`/events`、`/health` 等 HTTP API
-- AstrBot 端负责 QQ 指令、定时推送、离线告警、订阅管理与 Webhook 接收
+- FiveM 端负责提供 `/status`、`/players`、`/job/:name`、`/events`、`/health` 等查询 API，以及 `/admin/*` 管理 API
+- AstrBot 端负责 QQ 指令、定时推送、离线告警、订阅管理、Webhook 接收、远程管理与 AI 工具注册
 - 如启用 Webhook，FiveM 会主动向 AstrBot 发送事件通知；否则由 AstrBot 定时轮询 `/events`
 
 ## 安装
@@ -23,6 +23,7 @@
 #### 连接设置
 - **server_url** — FiveM 服务器状态 API 地址（如 `http://你的服务器IP:30120/fivem-server-status`）
 - **timeout** — 请求超时秒数（默认 10）
+- **admin_token** — 远程管理令牌（需与 FiveM 端 `config.lua` 的 `AdminToken` 一致；留空则禁用远程管理功能）
 
 #### 推送设置
 - **auto_push_enabled** — 是否启用定时状态推送（默认关闭）
@@ -61,9 +62,13 @@
 | `/fivem 订阅` | 订阅当前会话接收推送/告警/事件通知 🔒 |
 | `/fivem 退订` | 取消当前会话的推送订阅 🔒 |
 | `/fivem 订阅列表` | 查看所有推送目标 🔒 |
+| `/fivem 公告 <内容>` | 发送全服公告到游戏内 🔒 |
+| `/fivem 广播 <内容>` | 发送聊天广播到游戏内 🔒 |
+| `/fivem 踢人 <目标> [原因]` | 远程踢出游戏内玩家 🔒 |
 | `/fivem 帮助` | 显示所有可用指令 |
 
 > 🔒 = 需要管理员权限（`admin_ids` 配置）
+> 远程管理命令还需配置 `admin_token`
 
 ## 输出示例
 
@@ -199,8 +204,46 @@ exports['fivem-server-status']:pushEvent({
 - 管理员权限是否限制了订阅操作
 - 当前是否实际触发了推送条件（定时推送 / 告警 / 事件通知）
 
+## 远程管理（双向通道）
+
+从 QQ 直接操作游戏服务器，无需登录游戏或 txAdmin 面板：
+
+### 配置步骤
+
+1. FiveM `config.lua` → 设置 `AdminToken`（自定义一个安全令牌）：
+   ```lua
+   AdminToken = '你的安全令牌',
+   ```
+2. AstrBot WebUI → 连接设置 → 填写相同的 **admin_token**
+3. 重启 FiveM 资源即可
+
+### 使用示例
+```
+/fivem 公告 服务器将于 22:00 维护
+/fivem 广播 欢迎新玩家
+/fivem 踢人 3 违反规则
+/fivem 踢人 张三 AFK过久
+```
+
+> 踢人命令支持玩家 ID 或名称模糊匹配。
+
+## AI 自然语言查询
+
+插件注册了 6 个 LLM 工具，用户可用自然语言提问，AstrBot 的 LLM 会自动调用对应工具：
+
+| 自然语言示例 | 自动调用的工具 |
+|---|---|
+| "服务器现在多少人？" | `fivem_server_status` |
+| "在线玩家有哪些？" | `fivem_player_list` |
+| "现在警察几个人在线？" | `fivem_job_query` |
+| "张三在不在线？" | `fivem_player_search` |
+| "今天在线趋势怎么样？" | `fivem_trend` |
+
+> 需要 AstrBot 已配置 LLM 供应商（如 OpenAI / 通义千问 / DeepSeek 等），且用户消息经过 LLM 处理管道。
+
 ## 依赖
 
 - FiveM 服务端需部署 `fivem-server-status` 资源并开放 HTTP API
 - AstrBot 所在服务器需能访问 FiveM 服务器的 HTTP 端口
 - 使用 Webhook 时，FiveM 服务器需能访问 AstrBot 的 Webhook 端口
+- 使用 AI 自然语言查询时，需配置 LLM 供应商
