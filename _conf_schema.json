@@ -77,6 +77,12 @@
                 "type": "string",
                 "hint": "可选的安全令牌，需与 FiveM 端 config.lua 中的 WebhookToken 保持一致，留空则不验证",
                 "default": ""
+            },
+            "event_buffer_seconds": {
+                "description": "事件聚合窗口（秒）",
+                "type": "int",
+                "hint": "多人同时上下线时，等待指定秒数后合并为一条消息发送，减少群内刷屏；设为 0 则立即发送",
+                "default": 10
             }
         }
     },

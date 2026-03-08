@@ -91,8 +91,8 @@ TMPL_STATUS = (
     _HEAD
     + """
 <div class="header">
-  <div class="header-title">🎮 FiveM 服务器状态</div>
-  <div class="header-sub">Server Status Overview</div>
+  <div class="header-title">🎮 {% if server_name %}{{ server_name }}{% else %}FiveM 服务器状态{% endif %}</div>
+  <div class="header-sub">Server Status Overview{% if uptime %} · 已运行 {{ uptime }}{% endif %}</div>
 </div>
 <div class="content">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -274,6 +274,38 @@ TMPL_HELP = (
     🔒 = 需要管理员权限<br>
     推送目标也可在 WebUI 插件配置中直接管理
   </div>
+</div>
+<div class="footer">FiveM Server Status Plugin</div>
+"""
+    + _FOOT
+)
+
+# ── /fivem 查找 ──
+
+TMPL_SEARCH = (
+    _HEAD
+    + """
+<div class="header">
+  <div class="header-title">🔍 玩家搜索</div>
+  <div class="header-sub">关键词：{{ keyword }}　匹配 {{ results|length }} 人</div>
+</div>
+<div class="content">
+  {% if results %}
+  <div class="row" style="font-size:14px; color:#8b949e; font-weight:600; padding:10px 16px;">
+    <span style="width:50px;">ID</span>
+    <span style="flex:1;">名称</span>
+    <span style="width:110px; text-align:right;">职业</span>
+  </div>
+  {% for p in results %}
+  <div class="row {% if loop.index is odd %}row-alt{% endif %}">
+    <span style="width:50px; color:#8b949e;">[{{ p.id }}]</span>
+    <span style="flex:1;">{{ p.name }}</span>
+    <span style="width:110px; text-align:right; color:#00d4aa; font-size:14px;">{{ p.job_label }}</span>
+  </div>
+  {% endfor %}
+  {% else %}
+  <div style="text-align:center; padding:32px; color:#8b949e; font-size:18px;">未找到匹配「{{ keyword }}」的在线玩家</div>
+  {% endif %}
 </div>
 <div class="footer">FiveM Server Status Plugin</div>
 """

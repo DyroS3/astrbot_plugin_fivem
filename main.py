@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import aiohttp
 from aiohttp import web
@@ -8,10 +9,13 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
 from astrbot.core.star.star_tools import StarTools
 
-from .templates import TMPL_STATUS, TMPL_PLAYERS, TMPL_JOB, TMPL_SELFCHECK, TMPL_HELP, CARD_VIEWPORT_WIDTH
+from .templates import (
+    TMPL_STATUS, TMPL_PLAYERS, TMPL_JOB, TMPL_SELFCHECK, TMPL_HELP, TMPL_SEARCH,
+    CARD_VIEWPORT_WIDTH,
+)
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询 FiveM 服务器在线状态", "1.7.2")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询 FiveM 服务器在线状态", "1.8.0")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -40,6 +44,7 @@ class FiveMStatusPlugin(Star):
         self.webhook_enabled = push.get("webhook_enabled", False)
         self.webhook_port = push.get("webhook_port", 5765)
         self.webhook_token = push.get("webhook_token", "")
+        self.event_buffer_seconds = max(push.get("event_buffer_seconds", 10), 0)
 
         self._push_task: asyncio.Task | None = None
         self._push_targets: set[str] = set()
@@ -47,6 +52,8 @@ class FiveMStatusPlugin(Star):
         self._alerted = False
         self._session: aiohttp.ClientSession | None = None
         self._webhook_runner: web.AppRunner | None = None
+        self._event_buffer: list[dict] = []
+        self._flush_task: asyncio.Task | None = None
         self._load_push_targets()
 
     # ── 推送目标持久化 ──
@@ -146,6 +153,8 @@ class FiveMStatusPlugin(Star):
     async def terminate(self):
         """插件卸载，停止所有后台服务"""
         self._stop_push_loop()
+        if self._flush_task and not self._flush_task.done():
+            self._flush_task.cancel()
         await self._stop_webhook_server()
         if self._session and not self._session.closed:
             await self._session.close()
@@ -183,16 +192,38 @@ class FiveMStatusPlugin(Star):
 
     # ── 状态文本格式化 ──
 
+    @staticmethod
+    def _format_uptime(seconds: int) -> str:
+        """将秒数格式化为可读的运行时长"""
+        if seconds < 60:
+            return f"{seconds} 秒"
+        minutes = seconds // 60
+        if minutes < 60:
+            return f"{minutes} 分钟"
+        hours = minutes // 60
+        remaining_min = minutes % 60
+        if hours < 24:
+            return f"{hours} 小时 {remaining_min} 分钟"
+        days = hours // 24
+        remaining_hours = hours % 24
+        return f"{days} 天 {remaining_hours} 小时"
+
     def _format_status(self, data: dict) -> str:
         """将 /status API 响应格式化为可读文本"""
         status = data["data"]
         total = status.get("totalPlayers", 0)
         max_players = status.get("maxPlayers", 0)
+        server_name = status.get("serverName", "")
+        uptime = status.get("uptime")
 
         lines = [
             f"🎮 FiveM 服务器状态",
-            f"👥 在线人数: {total}/{max_players}",
         ]
+        if server_name:
+            lines.append(f"🏷️ {server_name}")
+        lines.append(f"👥 在线人数: {total}/{max_players}")
+        if uptime is not None:
+            lines.append(f"⏱️ 运行时长: {self._format_uptime(uptime)}")
 
         jobs = status.get("jobs", [])
         if jobs:
@@ -330,6 +361,23 @@ class FiveMStatusPlugin(Star):
         return player_lines, server_lines
 
     async def _process_and_broadcast_events(self, events: list[dict]):
+        """将事件放入缓冲区，延迟合并后广播；buffer_seconds=0 时立即发送"""
+        if self.event_buffer_seconds <= 0:
+            await self._send_events(events)
+            return
+        self._event_buffer.extend(events)
+        if self._flush_task is None or self._flush_task.done():
+            self._flush_task = asyncio.create_task(self._flush_events())
+
+    async def _flush_events(self):
+        """等待缓冲窗口结束后，批量发送所有缓冲事件"""
+        await asyncio.sleep(self.event_buffer_seconds)
+        events = self._event_buffer
+        self._event_buffer = []
+        if events:
+            await self._send_events(events)
+
+    async def _send_events(self, events: list[dict]):
         """格式化事件并广播到所有推送目标"""
         player_lines, server_lines = self._format_event_lines(events)
         if server_lines and self.notify_server_events:
@@ -437,7 +485,10 @@ class FiveMStatusPlugin(Star):
         total = status.get("totalPlayers", 0)
         max_p = status.get("maxPlayers", 0)
         ratio = round(total / max_p * 100) if max_p else 0
+        uptime = status.get("uptime")
         tmpl_data = {
+            "server_name": status.get("serverName", ""),
+            "uptime": self._format_uptime(uptime) if uptime is not None else None,
             "total": total,
             "max_players": max_p,
             "ratio": ratio,
@@ -550,6 +601,40 @@ class FiveMStatusPlugin(Star):
 
         tmpl_data = {"label": label, "online": online, "players": tmpl_players}
         async for result in self._render_image(event, TMPL_JOB, tmpl_data, "\n".join(lines)):
+            yield result
+
+    @fivem.command("查找")
+    async def search_player(self, event: AstrMessageEvent, keyword: str):
+        """模糊搜索在线玩家（用法: /fivem 查找 玩家名）"""
+        data = await self._request("/players")
+        if data is None:
+            yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
+            return
+
+        if not data.get("success"):
+            yield event.plain_result("❌ 服务器返回异常数据。")
+            return
+
+        kw = keyword.lower()
+        results = []
+        for p in data["data"]:
+            name = p.get("name", "")
+            if kw in name.lower():
+                results.append({
+                    "id": p.get("id", "?"),
+                    "name": name,
+                    "job_label": p.get("jobLabel", p.get("job", "")),
+                })
+
+        lines = [f"🔍 搜索「{keyword}」 — 匹配 {len(results)} 人:"]
+        if results:
+            for r in results:
+                lines.append(f"  [{r['id']}] {r['name']} — {r['job_label']}")
+        else:
+            lines.append("  未找到匹配的在线玩家。")
+
+        tmpl_data = {"keyword": keyword, "results": results}
+        async for result in self._render_image(event, TMPL_SEARCH, tmpl_data, "\n".join(lines)):
             yield result
 
     @fivem.command("检测")
@@ -712,6 +797,7 @@ class FiveMStatusPlugin(Star):
             "  /fivem 状态         — 查询在线人数与职业在线",
             "  /fivem 玩家         — 查询在线玩家列表",
             "  /fivem 职业 <名>    — 查询指定职业在线玩家",
+            "  /fivem 查找 <名>    — 模糊搜索在线玩家",
             "  /fivem 检测         — 服务器健康检测",
             "  /fivem 帮助         — 显示本帮助",
             "",
@@ -730,6 +816,7 @@ class FiveMStatusPlugin(Star):
                 {"usage": "/fivem 状态", "desc": "查询在线人数与职业在线"},
                 {"usage": "/fivem 玩家", "desc": "查询在线玩家列表"},
                 {"usage": "/fivem 职业 <名>", "desc": "查询指定职业在线玩家"},
+                {"usage": "/fivem 查找 <名>", "desc": "模糊搜索在线玩家"},
                 {"usage": "/fivem 检测", "desc": "服务器健康检测"},
                 {"usage": "/fivem 帮助", "desc": "显示本帮助"},
             ],
