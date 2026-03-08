@@ -206,8 +206,11 @@ class FiveMStatusPlugin(Star):
         return str(event.get_sender_id()) in self.admin_ids
 
     def _check_cooldown(self, event: AstrMessageEvent) -> str | None:
-        """检查命令冷却，返回提示文本或 None（允许执行）。管理员豁免。"""
-        if self.command_cooldown <= 0 or self._is_admin(event):
+        """检查命令冷却，返回提示文本或 None（允许执行）。明确配置的管理员豁免。"""
+        if self.command_cooldown <= 0:
+            return None
+        # 仅当 admin_ids 非空且用户在列表中时才豁免；admin_ids 为空时所有人都受冷却限制
+        if self.admin_ids and str(event.get_sender_id()) in self.admin_ids:
             return None
         uid = str(event.get_sender_id())
         now = time.time()
@@ -216,6 +219,9 @@ class FiveMStatusPlugin(Star):
         if remaining > 0:
             return f"⏳ 操作过于频繁，请 {remaining:.0f} 秒后再试。"
         self._cooldowns[uid] = now
+        # 清理过期条目，防止字典无限增长
+        cutoff = now - self.command_cooldown
+        self._cooldowns = {k: v for k, v in self._cooldowns.items() if v >= cutoff}
         return None
 
     # ── HTTP 请求 ──

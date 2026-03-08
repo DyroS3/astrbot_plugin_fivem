@@ -112,6 +112,23 @@
 
 > 支持的 txAdmin 事件：管理员公告、服务器关闭、计划重启倒计时。
 
+## 自定义事件钩子
+
+其他 FiveM 资源可通过 `exports` 向 QQ 群推送自定义通知：
+
+```lua
+-- 在你的 FiveM 资源中调用
+exports['fivem-server-status']:pushEvent({
+    type = 'custom',     -- 可选，不填默认 'custom'
+    title = '银行抢劫',   -- 通知标题
+    message = '抢劫已开始' -- 通知内容（可选）
+})
+```
+
+群内显示效果：`🔔 银行抢劫: 抢劫已开始`
+
+> 自定义事件归类为服务器通知，受 `notify_server_events` 开关控制。需同时开启 `event_notify_enabled` 和 `notify_server_events` 才能接收。
+
 ## Webhook 实时推送
 
 默认的事件通知采用轮询模式（按 `auto_push_interval` 间隔拉取）。开启 Webhook 后，FiveM 端事件发生时会主动 POST 到 AstrBot 插件，延迟 <1 秒；此时插件不再轮询 `/events`，以避免重复推送。
