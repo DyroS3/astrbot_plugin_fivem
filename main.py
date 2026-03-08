@@ -13,16 +13,12 @@ from astrbot.api import logger, AstrBotConfig
 from astrbot.core.star.star_tools import StarTools
 import astrbot.api.message_components as Comp
 
-from .templates import (
-    TMPL_STATUS, TMPL_PLAYERS, TMPL_JOB, TMPL_SELFCHECK, TMPL_HELP, TMPL_SEARCH, TMPL_TREND,
-    CARD_VIEWPORT_WIDTH,
-)
 
 _HISTORY_FILE = Path(__file__).parent / "_history.json"
 _HISTORY_RETENTION = 24 * 3600  # 保留 24 小时数据
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.14.2")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.15.0")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -293,20 +289,29 @@ class FiveMStatusPlugin(Star):
         remaining_hours = hours % 24
         return f"{days} 天 {remaining_hours} 小时"
 
-    def _build_status_tmpl_data(self, data: dict) -> dict:
-        """从 /status API 响应构建状态模板所需数据"""
+    def _format_status_md(self, data: dict) -> str:
+        """将 /status API 响应格式化为 Markdown"""
         status = data["data"]
         total = status.get("totalPlayers", 0)
-        max_p = status.get("maxPlayers", 0)
+        max_players = status.get("maxPlayers", 0)
+        server_name = status.get("serverName", "")
         uptime = status.get("uptime")
-        return {
-            "server_name": status.get("serverName", ""),
-            "uptime": self._format_uptime(uptime) if uptime is not None else None,
-            "total": total,
-            "max_players": max_p,
-            "ratio": round(total / max_p * 100) if max_p else 0,
-            "jobs": status.get("jobs", []),
-        }
+        lines = ["# 🎮 FiveM 服务器状态\n"]
+        if server_name:
+            lines.append(f"**🏷️ {server_name}**\n")
+        lines.append(f"- 👥 在线人数: **{total} / {max_players}**")
+        if uptime is not None:
+            lines.append(f"- ⏱️ 运行时长: {self._format_uptime(uptime)}")
+        jobs = status.get("jobs", [])
+        if jobs:
+            lines.append("\n## 📋 职业在线\n")
+            lines.append("| 职业 | 在线 |")
+            lines.append("|------|------|")
+            for job in jobs:
+                name = job.get("label", job.get("name", "未知"))
+                online = job.get("online", 0)
+                lines.append(f"| {name} | {online} 人 |")
+        return "\n".join(lines)
 
     def _format_status(self, data: dict) -> str:
         """将 /status API 响应格式化为可读文本"""
@@ -335,17 +340,11 @@ class FiveMStatusPlugin(Star):
 
         return "\n".join(lines)
 
-    async def _render_image(self, event: AstrMessageEvent, template: str, data: dict, fallback_text: str):
-        """尝试用 html_render 渲染图片卡片，失败则回退纯文本"""
+    async def _render_image(self, event: AstrMessageEvent, md_text: str, fallback_text: str):
+        """尝试用 text_to_image 渲染 Markdown 图片，失败则回退纯文本"""
         if self.render_image:
             try:
-                url = await self.html_render(
-                    template, data,
-                    options={
-                        "type": "png",
-                        "viewport_width": CARD_VIEWPORT_WIDTH,
-                    },
-                )
+                url = await self.text_to_image(md_text)
                 yield event.image_result(url)
                 return
             except Exception as e:
@@ -399,8 +398,7 @@ class FiveMStatusPlugin(Star):
 
                 # ── 定时推送 ──
                 if self.auto_push_enabled and ok:
-                    tmpl_data = self._build_status_tmpl_data(data)
-                    await self._broadcast_image(TMPL_STATUS, tmpl_data, self._format_status(data))
+                    await self._broadcast_image(self._format_status_md(data), self._format_status(data))
 
                 # ── 玩家上下线事件通知 ──
                 if self.event_notify_enabled and (self.notify_player_events or self.notify_server_events) and not self.webhook_enabled and ok:
@@ -675,14 +673,11 @@ class FiveMStatusPlugin(Star):
             logger.warning(f"FiveM 插件：无法为群号 {target} 构造 UMO: {e}")
         return target
 
-    async def _broadcast_image(self, template: str, data: dict, fallback_text: str):
-        """尝试渲染图片卡片并广播到所有推送目标，失败则回退纯文本"""
+    async def _broadcast_image(self, md_text: str, fallback_text: str):
+        """尝试用 text_to_image 渲染 Markdown 图片并广播，失败则回退纯文本"""
         if self.render_image:
             try:
-                url = await self.html_render(
-                    template, data,
-                    options={"type": "png", "viewport_width": CARD_VIEWPORT_WIDTH},
-                )
+                url = await self.text_to_image(md_text)
                 chain = MessageChain().image(url)
                 await self._broadcast_chain(chain)
                 return
@@ -730,8 +725,7 @@ class FiveMStatusPlugin(Star):
         if not data.get("success"):
             yield event.plain_result("❌ 服务器返回异常数据。")
             return
-        tmpl_data = self._build_status_tmpl_data(data)
-        async for result in self._render_image(event, TMPL_STATUS, tmpl_data, self._format_status(data)):
+        async for result in self._render_image(event, self._format_status_md(data), self._format_status(data)):
             yield result
 
     @fivem.command("状态")
@@ -756,8 +750,8 @@ class FiveMStatusPlugin(Star):
         if not players:
             yield event.plain_result("当前没有玩家在线。")
             return
-        lines = [f"👥 在线玩家 ({len(players)} 人):"]
-        tmpl_players = []
+        fallback = [f"👥 在线玩家 ({len(players)} 人):"]
+        md = [f"# 👥 在线玩家 ({len(players)} 人)\n", "| ID | 名称 | 职业 | 在线时长 |", "|----|------|------|----------|"]
         for p in players:
             pid = p.get("id", "?")
             name = p.get("name", "未知")
@@ -765,11 +759,9 @@ class FiveMStatusPlugin(Star):
             online_sec = p.get("onlineSeconds")
             duration = self._format_uptime(online_sec) if online_sec is not None else None
             suffix = f" ({duration})" if duration else ""
-            lines.append(f"  [{pid}] {name} — {job_label}{suffix}")
-            tmpl_players.append({"id": pid, "name": name, "job_label": job_label, "duration": duration})
-        async for result in self._render_image(
-            event, TMPL_PLAYERS, {"players": tmpl_players}, "\n".join(lines)
-        ):
+            fallback.append(f"  [{pid}] {name} — {job_label}{suffix}")
+            md.append(f"| {pid} | {name} | {job_label} | {duration or '-'} |")
+        async for result in self._render_image(event, "\n".join(md), "\n".join(fallback)):
             yield result
 
     @fivem.command("玩家")
@@ -836,18 +828,19 @@ class FiveMStatusPlugin(Star):
         label = job.get("label", job.get("name", job_keyword))
         online = job.get("online", 0)
         players = job.get("players", [])
-        lines = [f"👔 {label} ({online} 人在线):"]
-        tmpl_players = []
+        fallback = [f"👔 {label} ({online} 人在线):"]
+        md = [f"# 👔 {label} ({online} 人在线)\n"]
         if players:
+            md.extend(["| ID | 名称 |", "|----|------|"])
             for p in players:
                 pid = p.get("id", "?")
                 name = p.get("name", "未知")
-                lines.append(f"  [{pid}] {name}")
-                tmpl_players.append({"id": pid, "name": name})
+                fallback.append(f"  [{pid}] {name}")
+                md.append(f"| {pid} | {name} |")
         else:
-            lines.append("  当前无人在线")
-        tmpl_data = {"label": label, "online": online, "players": tmpl_players}
-        async for result in self._render_image(event, TMPL_JOB, tmpl_data, "\n".join(lines)):
+            fallback.append("  当前无人在线")
+            md.append("当前无人在线")
+        async for result in self._render_image(event, "\n".join(md), "\n".join(fallback)):
             yield result
 
     @fivem.command("职业")
@@ -878,14 +871,17 @@ class FiveMStatusPlugin(Star):
                     "name": name,
                     "job_label": p.get("jobLabel", p.get("job", "")),
                 })
-        lines = [f"🔍 搜索「{keyword}」 — 匹配 {len(results)} 人:"]
+        fallback = [f"🔍 搜索「{keyword}」 — 匹配 {len(results)} 人:"]
+        md = [f"# 🔍 搜索「{keyword}」 — 匹配 {len(results)} 人\n"]
         if results:
+            md.extend(["| ID | 名称 | 职业 |", "|----|------|------|"])
             for r in results:
-                lines.append(f"  [{r['id']}] {r['name']} — {r['job_label']}")
+                fallback.append(f"  [{r['id']}] {r['name']} — {r['job_label']}")
+                md.append(f"| {r['id']} | {r['name']} | {r['job_label']} |")
         else:
-            lines.append("  未找到匹配的在线玩家。")
-        tmpl_data = {"keyword": keyword, "results": results}
-        async for result in self._render_image(event, TMPL_SEARCH, tmpl_data, "\n".join(lines)):
+            fallback.append("  未找到匹配的在线玩家。")
+            md.append("未找到匹配的在线玩家。")
+        async for result in self._render_image(event, "\n".join(md), "\n".join(fallback)):
             yield result
 
     @fivem.command("查找")
@@ -897,8 +893,8 @@ class FiveMStatusPlugin(Star):
         async for result in self._do_search_player(event, keyword):
             yield result
 
-    def _build_trend_data(self, history: list[dict]) -> tuple[dict, list[str]] | None:
-        """将历史数据点构建为趋势模板数据和纯文本行，数据不足时返回 None"""
+    def _build_trend_data(self, history: list[dict]) -> tuple[str, list[str]] | None:
+        """将历史数据点构建为趋势 Markdown（含内嵌 SVG）和纯文本行，数据不足时返回 None"""
         if len(history) < 2:
             return None
 
@@ -913,13 +909,14 @@ class FiveMStatusPlugin(Star):
         avg_count = round(sum(counts) / len(counts), 1)
         peak_point = max(points, key=lambda p: p["count"])
 
-        lines = [
+        fallback = [
             f"📊 最近 {len(points)} 个数据点趋势:",
             f"  📈 峰值: {max_count} 人 ({peak_point['label']})",
             f"  📉 均值: {avg_count} 人",
             f"  📌 当前: {counts[-1]} 人",
         ]
 
+        # 构建 SVG 图表
         chart_w, chart_h = 440, 180
         margin_l, margin_b = 40, 24
         y_max = max(max_count, 1)
@@ -933,25 +930,32 @@ class FiveMStatusPlugin(Star):
         label_count = min(6, n)
         label_indices = [round(i * (n - 1) / max(label_count - 1, 1)) for i in range(label_count)]
         x_labels = [{"x": svg_points[i]["x"], "text": svg_points[i]["label"]} for i in label_indices]
-
         polyline = " ".join(f"{p['x']},{p['y']}" for p in svg_points)
 
-        tmpl_data = {
-            "polyline": polyline,
-            "svg_points": svg_points,
-            "x_labels": x_labels,
-            "chart_w": chart_w + margin_l,
-            "chart_h": chart_h,
-            "y_max": y_max,
-            "margin_l": margin_l,
-            "margin_b": margin_b,
-            "max_count": max_count,
-            "avg_count": avg_count,
-            "peak_label": peak_point["label"],
-            "current": counts[-1],
-            "total_points": len(points),
-        }
-        return tmpl_data, lines
+        total_w = chart_w + margin_l
+        svg_parts = [
+            f'<svg width="{total_w}" height="{chart_h}" viewBox="0 0 {total_w} {chart_h}" xmlns="http://www.w3.org/2000/svg" style="background:#f6f8fa;border-radius:8px;border:1px solid #d1d9e0;margin-top:12px;display:block">',
+            f'  <text x="4" y="14" font-size="11" fill="#656d76" font-family="sans-serif">{y_max}</text>',
+            f'  <text x="4" y="{chart_h - margin_b}" font-size="11" fill="#656d76" font-family="sans-serif">0</text>',
+            f'  <line x1="{margin_l}" y1="0" x2="{margin_l}" y2="{chart_h - margin_b}" stroke="#d1d9e0" stroke-width="1"/>',
+            f'  <line x1="{margin_l}" y1="{chart_h - margin_b}" x2="{total_w}" y2="{chart_h - margin_b}" stroke="#d1d9e0" stroke-width="1"/>',
+            f'  <polyline points="{polyline}" fill="none" stroke="#1f883d" stroke-width="2" stroke-linejoin="round"/>',
+        ]
+        for sp in svg_points:
+            svg_parts.append(f'  <circle cx="{sp["x"]}" cy="{sp["y"]}" r="2.5" fill="#1f883d"/>')
+        for xl in x_labels:
+            svg_parts.append(f'  <text x="{xl["x"]}" y="{chart_h - 4}" font-size="10" fill="#656d76" text-anchor="middle" font-family="sans-serif">{xl["text"]}</text>')
+        svg_parts.append('</svg>')
+        svg_str = "\n".join(svg_parts)
+
+        md_text = (
+            f"# 📊 在线人数趋势\n\n"
+            f"- 📈 峰值: **{max_count} 人** ({peak_point['label']})\n"
+            f"- 📉 均值: **{avg_count} 人**\n"
+            f"- 📌 当前: **{counts[-1]} 人**\n\n"
+            f"{svg_str}\n"
+        )
+        return md_text, fallback
 
     @fivem.command("趋势")
     async def trend(self, event: AstrMessageEvent):
@@ -964,8 +968,8 @@ class FiveMStatusPlugin(Star):
         if result is None:
             yield event.plain_result("📊 历史数据不足，至少需要 2 个数据点才能生成趋势图。\n提示：数据在定时推送轮询时自动采集。")
             return
-        tmpl_data, lines = result
-        async for r in self._render_image(event, TMPL_TREND, tmpl_data, "\n".join(lines)):
+        md_text, fallback = result
+        async for r in self._render_image(event, md_text, "\n".join(fallback)):
             yield r
 
     @fivem.command("检测")
@@ -1013,18 +1017,18 @@ class FiveMStatusPlugin(Star):
         if self.webhook_enabled:
             lines.append(f"🌐 Webhook 监听: {'已启动' if webhook_ready else '未启动'}")
 
-        # ── 图片渲染数据 ──
+        # ── 检查项 ──
         checks = [
-            {"icon": "🔗", "label": "API /health", "value": "正常" if health_ok else "失败", "status": "ok" if health_ok else "err"},
-            {"icon": "📊", "label": "API /status", "value": "正常" if status_ok else "失败", "status": "ok" if status_ok else "err"},
-            {"icon": "📡", "label": "事件通知", "value": self._describe_event_delivery(), "status": "ok" if self.event_notify_enabled else "warn"},
-            {"icon": "🗂️", "label": "通知范围", "value": self._describe_event_scope(), "status": "ok"},
-            {"icon": "📬", "label": "订阅目标", "value": f"{len(self._push_targets)} 个", "status": "ok" if self._push_targets else "warn"},
-            {"icon": "🙋", "label": "当前会话", "value": "已订阅" if current_subscribed else "未订阅", "status": "ok" if current_subscribed else "warn"},
-            {"icon": "⚙️", "label": "后台任务", "value": "运行中" if loop_running else "未运行", "status": "ok" if loop_running else "warn"},
+            ("🔗", "API /health", "正常" if health_ok else "失败", health_ok),
+            ("📊", "API /status", "正常" if status_ok else "失败", status_ok),
+            ("📡", "事件通知", self._describe_event_delivery(), self.event_notify_enabled),
+            ("🗂️", "通知范围", self._describe_event_scope(), True),
+            ("📬", "订阅目标", f"{len(self._push_targets)} 个", bool(self._push_targets)),
+            ("🙋", "当前会话", "已订阅" if current_subscribed else "未订阅", current_subscribed),
+            ("⚙️", "后台任务", "运行中" if loop_running else "未运行", loop_running),
         ]
         if self.webhook_enabled:
-            checks.append({"icon": "🌐", "label": "Webhook", "value": "已启动" if webhook_ready else "未启动", "status": "ok" if webhook_ready else "err"})
+            checks.append(("🌐", "Webhook", "已启动" if webhook_ready else "未启动", webhook_ready))
 
         issues = []
         if not health_ok:
@@ -1049,8 +1053,17 @@ class FiveMStatusPlugin(Star):
             lines.append("")
             lines.append("✅ 未发现明显配置问题。")
 
-        tmpl_data = {"checks": checks, "issues": issues}
-        async for result in self._render_image(event, TMPL_SELFCHECK, tmpl_data, "\n".join(lines)):
+        md = ["# 🩺 FiveM 插件自检\n", "| 项目 | 状态 |", "|------|------|"]
+        for icon, label, value, ok in checks:
+            status_icon = "✅" if ok else "⚠️"
+            md.append(f"| {icon} {label} | {status_icon} {value} |")
+        if issues:
+            md.append("\n> **⚠️ 建议关注:**")
+            for issue in issues:
+                md.append(f"> - {issue}")
+        else:
+            md.append("\n✅ 未发现明显配置问题。")
+        async for result in self._render_image(event, "\n".join(md), "\n".join(lines)):
             yield result
 
     @fivem.command("订阅")
@@ -1207,27 +1220,30 @@ class FiveMStatusPlugin(Star):
             "提示：推送目标也可在 WebUI 插件配置中直接管理，事件通知范围可分别控制玩家动态和服务器通知。",
         ]
 
-        tmpl_data = {
-            "query_cmds": [
-                {"usage": "/fivem 状态", "desc": "查询在线人数与职业在线"},
-                {"usage": "/fivem 玩家", "desc": "查询在线玩家列表"},
-                {"usage": "/fivem 职业 <名>", "desc": "查询指定职业在线玩家"},
-                {"usage": "/fivem 查找 <名>", "desc": "模糊搜索在线玩家"},
-                {"usage": "/fivem 趋势", "desc": "24 小时在线人数趋势图"},
-                {"usage": "/fivem 检测", "desc": "服务器健康检测"},
-                {"usage": "/fivem 帮助", "desc": "显示本帮助"},
-            ],
-            "admin_cmds": [
-                {"usage": "/fivem 自检", "desc": "检查 API、Webhook 与订阅状态"},
-                {"usage": "/fivem 订阅", "desc": "订阅当前会话接收推送"},
-                {"usage": "/fivem 退订", "desc": "取消推送订阅"},
-                {"usage": "/fivem 订阅列表", "desc": "查看所有推送目标"},
-                {"usage": "/fivem 公告 <内容>", "desc": "发送公告到游戏内"},
-                {"usage": "/fivem 广播 <内容>", "desc": "发送聊天广播到游戏内"},
-                {"usage": "/fivem 踢人 <目标>", "desc": "远程踢出游戏内玩家"},
-            ],
-        }
-        async for result in self._render_image(event, TMPL_HELP, tmpl_data, "\n".join(lines)):
+        md = [
+            "# 📖 FiveM 指令帮助\n",
+            "## 查询类命令\n",
+            "| 命令 | 说明 |",
+            "|------|------|",
+            "| `/fivem 状态` | 查询在线人数与职业在线 |",
+            "| `/fivem 玩家` | 查询在线玩家列表 |",
+            "| `/fivem 职业 <名>` | 查询指定职业在线玩家 |",
+            "| `/fivem 查找 <名>` | 模糊搜索在线玩家 |",
+            "| `/fivem 趋势` | 24 小时在线人数趋势图 |",
+            "| `/fivem 检测` | 服务器健康检测 |",
+            "| `/fivem 帮助` | 显示本帮助 |",
+            "\n## 管理员命令 🔒\n",
+            "| 命令 | 说明 |",
+            "|------|------|",
+            "| `/fivem 自检` | 检查 API、Webhook 与订阅状态 |",
+            "| `/fivem 订阅` | 订阅当前会话接收推送 |",
+            "| `/fivem 退订` | 取消推送订阅 |",
+            "| `/fivem 订阅列表` | 查看所有推送目标 |",
+            "| `/fivem 公告 <内容>` | 发送公告到游戏内 |",
+            "| `/fivem 广播 <内容>` | 发送聊天广播到游戏内 |",
+            "| `/fivem 踢人 <目标>` | 远程踢出游戏内玩家 |",
+        ]
+        async for result in self._render_image(event, "\n".join(md), "\n".join(lines)):
             yield result
 
     # ── AI 自然语言查询工具 ──
@@ -1281,6 +1297,6 @@ class FiveMStatusPlugin(Star):
         if result is None:
             yield event.plain_result("� 历史数据不足，至少需要 2 个数据点才能生成趋势图。")
             return
-        tmpl_data, lines = result
-        async for r in self._render_image(event, TMPL_TREND, tmpl_data, "\n".join(lines)):
+        md_text, fallback = result
+        async for r in self._render_image(event, md_text, "\n".join(fallback)):
             yield r

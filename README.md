@@ -2,7 +2,7 @@
 
 通过 QQ 查询和管理 FiveM 服务器，支持远程管理与 AI 自然语言查询。
 
-本插件需要配合 FiveM 端 `fivem-server-status` 资源一起使用，兼容当前配套版本 `v1.14.2`。
+本插件需要配合 FiveM 端 `fivem-server-status` 资源一起使用，兼容当前配套版本 `v1.15.0`。
 
 ## 架构与依赖关系
 

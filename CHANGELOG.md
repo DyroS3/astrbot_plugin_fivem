@@ -1,5 +1,21 @@
 # 更新日志
 
+## v1.15.0
+
+### 重构
+
+- **统一渲染引擎**：所有图片卡片（状态/玩家/职业/搜索/趋势/自检/帮助）从 `html_render()` 迁移到 `text_to_image()`，统一使用 Markdown 格式渲染
+  - 移除 `templates.py` 中 7 套 HTML 模板的依赖（`TMPL_STATUS`/`TMPL_PLAYERS`/`TMPL_JOB`/`TMPL_SEARCH`/`TMPL_TREND`/`TMPL_SELFCHECK`/`TMPL_HELP`）
+  - 移除 `CARD_VIEWPORT_WIDTH` 常量，渲染宽度由全局 t2i 模板 CSS 控制
+  - 查询结果改用 Markdown 表格，渲染效果由 AstrBot 全局 t2i 模板统一管理
+  - 趋势图 SVG 直接内嵌 Markdown，无需独立 HTML 模板
+- **全局 t2i 模板优化**：固定内容宽度 700px（`width: 700px; max-width: 90%`），所有卡片渲染宽度统一
+
+### 改进
+
+- 代码精简：移除 `_build_status_tmpl_data()` 方法，新增 `_format_status_md()` 直接输出 Markdown
+- `_render_image()` / `_broadcast_image()` 签名简化为 `(md_text, fallback_text)`
+
 ## v1.14.2
 
 ### 修复
