@@ -11,7 +11,7 @@ from astrbot.core.star.star_tools import StarTools
 from .templates import TMPL_STATUS, TMPL_PLAYERS, TMPL_JOB, TMPL_SELFCHECK, TMPL_HELP, CARD_VIEWPORT_WIDTH
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询 FiveM 服务器在线状态", "1.7.0")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询 FiveM 服务器在线状态", "1.7.1")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
