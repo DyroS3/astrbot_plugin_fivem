@@ -8,7 +8,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
 from astrbot.core.star.star_tools import StarTools
 
-from .templates import TMPL_STATUS, TMPL_PLAYERS, TMPL_JOB, TMPL_SELFCHECK, TMPL_HELP
+from .templates import TMPL_STATUS, TMPL_PLAYERS, TMPL_JOB, TMPL_SELFCHECK, TMPL_HELP, CARD_VIEWPORT_WIDTH
 
 
 @register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询 FiveM 服务器在线状态", "1.7.0")
@@ -210,7 +210,10 @@ class FiveMStatusPlugin(Star):
             try:
                 url = await self.html_render(
                     template, data,
-                    options={"type": "png", "omit_background": True},
+                    options={
+                        "type": "png",
+                        "viewport_width": CARD_VIEWPORT_WIDTH,
+                    },
                 )
                 yield event.image_result(url)
                 return
