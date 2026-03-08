@@ -180,7 +180,7 @@ class FiveMStatusPlugin(Star):
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=self.timeout)
         )
-        if self._push_targets and self._needs_loop():
+        if self._needs_loop():
             self._start_push_loop()
         if self.webhook_enabled:
             await self._start_webhook_server()
@@ -242,6 +242,21 @@ class FiveMStatusPlugin(Star):
         days = hours // 24
         remaining_hours = hours % 24
         return f"{days} 天 {remaining_hours} 小时"
+
+    def _build_status_tmpl_data(self, data: dict) -> dict:
+        """从 /status API 响应构建状态模板所需数据"""
+        status = data["data"]
+        total = status.get("totalPlayers", 0)
+        max_p = status.get("maxPlayers", 0)
+        uptime = status.get("uptime")
+        return {
+            "server_name": status.get("serverName", ""),
+            "uptime": self._format_uptime(uptime) if uptime is not None else None,
+            "total": total,
+            "max_players": max_p,
+            "ratio": round(total / max_p * 100) if max_p else 0,
+            "jobs": status.get("jobs", []),
+        }
 
     def _format_status(self, data: dict) -> str:
         """将 /status API 响应格式化为可读文本"""
@@ -308,15 +323,16 @@ class FiveMStatusPlugin(Star):
         try:
             while True:
                 await asyncio.sleep(self.auto_push_interval)
-                if not self._push_targets:
-                    continue
 
                 data = await self._request("/status")
                 ok = data is not None and data.get("success")
 
-                # ── 记录历史数据点 ──
+                # ── 记录历史数据点（无论是否有推送目标都采集） ──
                 if ok:
                     self._record_data_point(data["data"].get("totalPlayers", 0))
+
+                if not self._push_targets:
+                    continue
 
                 # ── 离线告警逻辑 ──
                 if self.alert_enabled:
@@ -337,19 +353,7 @@ class FiveMStatusPlugin(Star):
 
                 # ── 定时推送 ──
                 if self.auto_push_enabled and ok:
-                    status = data["data"]
-                    total = status.get("totalPlayers", 0)
-                    max_p = status.get("maxPlayers", 0)
-                    ratio = round(total / max_p * 100) if max_p else 0
-                    uptime = status.get("uptime")
-                    tmpl_data = {
-                        "server_name": status.get("serverName", ""),
-                        "uptime": self._format_uptime(uptime) if uptime is not None else None,
-                        "total": total,
-                        "max_players": max_p,
-                        "ratio": ratio,
-                        "jobs": status.get("jobs", []),
-                    }
+                    tmpl_data = self._build_status_tmpl_data(data)
                     await self._broadcast_image(TMPL_STATUS, tmpl_data, self._format_status(data))
 
                 # ── 玩家上下线事件通知 ──
@@ -552,19 +556,7 @@ class FiveMStatusPlugin(Star):
             yield event.plain_result("❌ 服务器返回异常数据。")
             return
 
-        status = data["data"]
-        total = status.get("totalPlayers", 0)
-        max_p = status.get("maxPlayers", 0)
-        ratio = round(total / max_p * 100) if max_p else 0
-        uptime = status.get("uptime")
-        tmpl_data = {
-            "server_name": status.get("serverName", ""),
-            "uptime": self._format_uptime(uptime) if uptime is not None else None,
-            "total": total,
-            "max_players": max_p,
-            "ratio": ratio,
-            "jobs": status.get("jobs", []),
-        }
+        tmpl_data = self._build_status_tmpl_data(data)
         async for result in self._render_image(event, TMPL_STATUS, tmpl_data, self._format_status(data)):
             yield result
 
@@ -891,9 +883,6 @@ class FiveMStatusPlugin(Star):
 
         self._discard_push_target(umo)
         self._save_push_targets()
-
-        if not self._push_targets:
-            self._stop_push_loop()
 
         yield event.plain_result(
             f"✅ 已取消当前会话的推送订阅。\n当前订阅总数: {len(self._push_targets)}"
