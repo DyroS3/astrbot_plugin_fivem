@@ -21,7 +21,7 @@ _HISTORY_FILE = Path(__file__).parent / "_history.json"
 _HISTORY_RETENTION = 24 * 3600  # 保留 24 小时数据
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询 FiveM 服务器在线状态", "1.9.1")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询 FiveM 服务器在线状态", "1.10.0")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -43,6 +43,7 @@ class FiveMStatusPlugin(Star):
         self.alert_enabled = alert.get("alert_enabled", True)
         self.alert_threshold = max(alert.get("alert_threshold", 3), 1)
         self.admin_ids: list[str] = [str(aid) for aid in perm.get("admin_ids", [])]
+        self.command_cooldown: int = max(perm.get("command_cooldown", 5), 0)
 
         display = config.get("display", {})
         self.render_image = display.get("render_image", True)
@@ -60,6 +61,7 @@ class FiveMStatusPlugin(Star):
         self._webhook_runner: web.AppRunner | None = None
         self._event_buffer: list[dict] = []
         self._flush_task: asyncio.Task | None = None
+        self._cooldowns: dict[str, float] = {}
         self._load_push_targets()
 
     # ── 推送目标持久化 ──
@@ -202,6 +204,19 @@ class FiveMStatusPlugin(Star):
         if not self.admin_ids:
             return True
         return str(event.get_sender_id()) in self.admin_ids
+
+    def _check_cooldown(self, event: AstrMessageEvent) -> str | None:
+        """检查命令冷却，返回提示文本或 None（允许执行）。管理员豁免。"""
+        if self.command_cooldown <= 0 or self._is_admin(event):
+            return None
+        uid = str(event.get_sender_id())
+        now = time.time()
+        last = self._cooldowns.get(uid, 0)
+        remaining = self.command_cooldown - (now - last)
+        if remaining > 0:
+            return f"⏳ 操作过于频繁，请 {remaining:.0f} 秒后再试。"
+        self._cooldowns[uid] = now
+        return None
 
     # ── HTTP 请求 ──
 
@@ -414,6 +429,15 @@ class FiveMStatusPlugin(Star):
                 minutes = round(seconds / 60)
                 server_lines.append(f"  ⏰ 计划重启: 剩余 {minutes} 分钟")
 
+            # ── 自定义事件（外部资源通过 exports 推送） ──
+            elif etype == "custom":
+                title = ev.get("title", "自定义事件")
+                message = ev.get("message", "")
+                line = f"  🔔 {title}"
+                if message:
+                    line += f": {message}"
+                server_lines.append(line)
+
         return player_lines, server_lines
 
     async def _process_and_broadcast_events(self, events: list[dict]):
@@ -547,6 +571,9 @@ class FiveMStatusPlugin(Star):
     @fivem.command("状态")
     async def server_status(self, event: AstrMessageEvent):
         """查询服务器在线状态与职业人数"""
+        if cd := self._check_cooldown(event):
+            yield event.plain_result(cd)
+            return
         data = await self._request("/status")
         if data is None:
             yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
@@ -563,6 +590,9 @@ class FiveMStatusPlugin(Star):
     @fivem.command("玩家")
     async def players_list(self, event: AstrMessageEvent):
         """查询在线玩家列表"""
+        if cd := self._check_cooldown(event):
+            yield event.plain_result(cd)
+            return
         data = await self._request("/players")
         if data is None:
             yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
@@ -634,7 +664,10 @@ class FiveMStatusPlugin(Star):
 
     @fivem.command("职业")
     async def job_query(self, event: AstrMessageEvent, job_name: str):
-        """查询指定职业的在线玩家（用法: /fivem 职业 执法队）"""
+        """查询指定职业的在线玩家"""
+        if cd := self._check_cooldown(event):
+            yield event.plain_result(cd)
+            return
         resolved, err = await self._resolve_job_name(job_name)
         if err:
             yield event.plain_result(err)
@@ -672,6 +705,9 @@ class FiveMStatusPlugin(Star):
     @fivem.command("查找")
     async def search_player(self, event: AstrMessageEvent, keyword: str):
         """模糊搜索在线玩家（用法: /fivem 查找 玩家名）"""
+        if cd := self._check_cooldown(event):
+            yield event.plain_result(cd)
+            return
         data = await self._request("/players")
         if data is None:
             yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
@@ -706,6 +742,9 @@ class FiveMStatusPlugin(Star):
     @fivem.command("趋势")
     async def trend(self, event: AstrMessageEvent):
         """查看最近 24 小时在线人数趋势图"""
+        if cd := self._check_cooldown(event):
+            yield event.plain_result(cd)
+            return
         history = self._load_history()
         if len(history) < 2:
             yield event.plain_result("📊 历史数据不足，至少需要 2 个数据点才能生成趋势图。\n提示：数据在定时推送轮询时自动采集。")
@@ -768,6 +807,9 @@ class FiveMStatusPlugin(Star):
     @fivem.command("检测")
     async def health_check(self, event: AstrMessageEvent):
         """服务器健康检测"""
+        if cd := self._check_cooldown(event):
+            yield event.plain_result(cd)
+            return
         data = await self._request("/health")
         if data is None:
             yield event.plain_result("❌ FiveM 服务器不可达。")

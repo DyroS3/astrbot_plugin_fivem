@@ -128,6 +128,12 @@
                 "type": "list",
                 "hint": "拥有订阅/退订等管理指令权限的用户 ID（QQ 号），留空则所有人可用",
                 "default": []
+            },
+            "command_cooldown": {
+                "description": "命令冷却（秒）",
+                "type": "int",
+                "hint": "普通用户连续执行查询命令的最小间隔（秒），设为 0 则不限制；管理员不受此限制",
+                "default": 5
             }
         }
     }

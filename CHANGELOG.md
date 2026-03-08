@@ -1,5 +1,17 @@
 # 更新日志
 
+## v1.10.0
+
+### 新功能
+
+- **自定义事件钩子**：Lua 端通过 `exports('pushEvent', ...)` 导出事件推送接口，其他 FiveM 资源可调用 `exports['fivem-server-status']:pushEvent({ type = 'custom', title = '...', message = '...' })` 向 QQ 群推送自定义通知
+- **命令冷却 / 频率限制**：新增 `command_cooldown` 配置项（默认 5 秒），防止普通用户刷屏；管理员不受限制
+
+### 改进
+
+- **状态模板数据构建抽取**：提取 `_build_status_tmpl_data()` 消除 `_push_loop` 与 `server_status` 命令中的重复代码
+- **趋势数据采集独立于订阅**：定时循环启动不再依赖 `_push_targets`，即使无订阅者也会采集历史数据
+
 ## v1.9.1
 
 ### 改进
