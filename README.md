@@ -2,7 +2,7 @@
 
 通过 QQ 查询和管理 FiveM 服务器，支持远程管理与 AI 自然语言查询。
 
-本插件需要配合 FiveM 端 `fivem-server-status` 资源一起使用，兼容当前配套版本 `v1.11.0`。
+本插件需要配合 FiveM 端 `fivem-server-status` 资源一起使用，兼容当前配套版本 `v1.12.0`。
 
 ## 架构与依赖关系
 
@@ -30,7 +30,7 @@
 - **auto_push_interval** — 定时状态推送 / 事件轮询间隔秒数（默认 300，最小 60）
 - **event_notify_enabled** — 事件通知总开关：玩家动态 + txAdmin 事件（默认关闭）
 - **notify_player_events** — 是否推送玩家动态（连接 / 加入 / 离开）
-- **notify_server_events** — 是否推送服务器通知（txAdmin 公告 / 关服 / 重启）
+- **notify_server_events** — 是否推送服务器通知（txAdmin 公告 / 关服 / 重启 / 启动）
 - **push_targets** — 推送目标列表（可直接填写 QQ 群号，插件会自动转换；也可通过 `/fivem 订阅` 命令自动添加）
 - **webhook_enabled** — 是否启用 Webhook 实时推送（默认关闭；开启后事件通知改为实时推送，不再轮询）
 - **webhook_port** — Webhook 监听端口（默认 5765）
@@ -116,6 +116,14 @@
 ```
 
 > 支持的 txAdmin 事件：管理员公告、服务器关闭、计划重启倒计时。
+
+### 服务器启动通知（自动推送）
+```
+🖥️ 服务器通知 (1 条):
+  ✅ 服务器已启动: My RP Server
+```
+
+> 服务器重启或资源加载完成后自动推送，无需等待离线告警阈值。
 
 ## 自定义事件钩子
 

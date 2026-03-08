@@ -21,7 +21,7 @@ _HISTORY_FILE = Path(__file__).parent / "_history.json"
 _HISTORY_RETENTION = 24 * 3600  # 保留 24 小时数据
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.11.0")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.12.0")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -393,7 +393,6 @@ class FiveMStatusPlugin(Star):
                     else:
                         if self._alerted:
                             self._alerted = False
-                            await self._broadcast("✅ FiveM 服务器已恢复在线。")
                         self._fail_count = 0
 
                 # ── 定时推送 ──
@@ -458,6 +457,11 @@ class FiveMStatusPlugin(Star):
                 seconds = ev.get("secondsRemaining", 0)
                 minutes = round(seconds / 60)
                 server_lines.append(f"  ⏰ 计划重启: 剩余 {minutes} 分钟")
+
+            # ── 服务器启动事件 ──
+            elif etype == "server_start":
+                server_name = ev.get("serverName", "FiveM Server")
+                server_lines.append(f"  ✅ 服务器已启动: {server_name}")
 
             # ── 自定义事件（外部资源通过 exports 推送） ──
             elif etype == "custom":
