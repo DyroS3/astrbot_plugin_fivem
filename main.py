@@ -18,7 +18,7 @@ _HISTORY_FILE = Path(__file__).parent / "_history.json"
 _HISTORY_RETENTION = 24 * 3600  # 保留 24 小时数据
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.15.0")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.15.1")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -461,14 +461,10 @@ class FiveMStatusPlugin(Star):
                 lines.append(f"  🔴 {id_tag}{name}{job_suffix} 离开了服务器{reason_suffix}")
         return lines
 
-    def _build_server_notification(self, events: list[dict]) -> tuple[str | None, str, bool]:
-        """构建服务器事件通知文本。返回 (Markdown 图片文本, 纯文本 fallback, 是否@全体)"""
-        md_lines: list[str] = []
-        fallback_lines: list[str] = []
+    def _build_server_notification(self, events: list[dict]) -> tuple[str | None, bool]:
+        """构建服务器事件纯文本通知。返回 (文本, 是否@全体)"""
+        lines: list[str] = []
         has_at_all = False
-        icon_map = {"ok": "✅", "info": "📢", "warn": "⏰", "err": "🔴"}
-        severity = "ok"
-        sev_order = {"ok": 0, "info": 1, "warn": 2, "err": 3}
 
         for ev in events:
             etype = ev.get("type")
@@ -479,115 +475,61 @@ class FiveMStatusPlugin(Star):
             if etype == "announcement":
                 author = ev.get("author", "txAdmin")
                 message = ev.get("message", "")
-                md_lines.append(f"**📢 管理员公告 ({author})**")
-                if message:
-                    md_lines.append(f"- 内容: {message}")
-                if ev.get("time"):
-                    md_lines.append(f"- ⏰ {t_str}")
-                md_lines.append("")
-                fallback_lines.append(f"  📢 管理员公告 ({author}): {message}")
-                if sev_order["info"] > sev_order[severity]:
-                    severity = "info"
+                lines.append(f"  📢 管理员公告 ({author}): {message}")
 
             elif etype == "shutdown":
                 author = ev.get("author", "txAdmin")
                 delay = ev.get("delay", 0)
                 message = ev.get("message", "")
                 delay_sec = round(delay / 1000) if delay else 0
-                title = self.shutdown_template.format(author=author, delay=delay_sec, message=message, time=t_str, at_all="").strip()
+                line = self.shutdown_template.format(author=author, delay=delay_sec, message=message, time=t_str, at_all="{at_all}")
+                if message and "{message}" not in self.shutdown_template:
+                    line += f": {message}"
+                lines.append(f"  {line}")
                 if "{at_all}" in self.shutdown_template:
                     has_at_all = True
-                md_lines.append(f"**🔴 {title}**")
-                if message and "{message}" not in self.shutdown_template:
-                    md_lines.append(f"- 附加消息: {message}")
-                if ev.get("time"):
-                    md_lines.append(f"- ⏰ {t_str}")
-                md_lines.append("")
-                fb = self.shutdown_template.format(author=author, delay=delay_sec, message=message, time=t_str, at_all="{at_all}")
-                if message and "{message}" not in self.shutdown_template:
-                    fb += f": {message}"
-                fallback_lines.append(f"  {fb}")
-                severity = "err"
 
             elif etype == "restart":
                 seconds = ev.get("secondsRemaining", 0)
                 minutes = round(seconds / 60)
-                title = self.restart_template.format(minutes=minutes, seconds=seconds, time=t_str, at_all="").strip()
+                line = self.restart_template.format(minutes=minutes, seconds=seconds, time=t_str, at_all="{at_all}")
+                lines.append(f"  {line}")
                 if "{at_all}" in self.restart_template:
                     has_at_all = True
-                md_lines.append(f"**⏰ {title}**")
-                if ev.get("time"):
-                    md_lines.append(f"- ⏰ {t_str}")
-                md_lines.append("")
-                fb = self.restart_template.format(minutes=minutes, seconds=seconds, time=t_str, at_all="{at_all}")
-                fallback_lines.append(f"  {fb}")
-                if sev_order["warn"] > sev_order[severity]:
-                    severity = "warn"
 
             elif etype == "server_start":
                 sn = ev.get("serverName", "FiveM Server")
                 players = ev.get("totalPlayers", 0)
                 max_p = ev.get("maxPlayers", 0)
-                title = self.server_start_template.format(server_name=sn, time=t_str, players=players, max_players=max_p, at_all="").strip()
+                line = self.server_start_template.format(server_name=sn, time=t_str, players=players, max_players=max_p, at_all="{at_all}")
+                lines.append(f"  {line}")
                 if "{at_all}" in self.server_start_template:
                     has_at_all = True
-                md_lines.append(f"**✅ {title}**")
-                if max_p:
-                    md_lines.append(f"- 在线 / 最大: {players} / {max_p}")
-                if ev.get("time"):
-                    md_lines.append(f"- ⏰ {t_str}")
-                md_lines.append("")
-                fb = self.server_start_template.format(server_name=sn, time=t_str, players=players, max_players=max_p, at_all="{at_all}")
-                fallback_lines.append(f"  {fb}")
 
             elif etype == "custom":
                 ctitle = ev.get("title", "自定义事件")
                 message = ev.get("message", "")
-                md_lines.append(f"**🔔 {ctitle}**")
-                if message:
-                    md_lines.append(f"- 内容: {message}")
-                if ev.get("time"):
-                    md_lines.append(f"- ⏰ {t_str}")
-                md_lines.append("")
                 line = f"  🔔 {ctitle}"
                 if message:
                     line += f": {message}"
-                fallback_lines.append(line)
-                if sev_order["info"] > sev_order[severity]:
-                    severity = "info"
+                lines.append(line)
 
-        if not md_lines:
-            return None, "", False
+        if not lines:
+            return None, False
 
-        header = f"# {icon_map[severity]} 服务器通知 ({len(fallback_lines)} 条)\n\n---\n"
-        md_text = header + "\n".join(md_lines)
-        fallback = f"🖥️ 服务器通知 ({len(fallback_lines)} 条):\n" + "\n".join(fallback_lines)
-        return md_text, fallback, has_at_all
+        text = f"🖥️ 服务器通知 ({len(lines)} 条):\n" + "\n".join(lines)
+        return text, has_at_all
 
-    async def _broadcast_notification(self, md_text: str, fallback: str, has_at_all: bool):
-        """将 Markdown 文本渲染为图片并广播；支持 @全体；渲染失败回退纯文本"""
-        try:
-            url = await self.text_to_image(md_text)
-            chain = MessageChain()
-            if has_at_all:
-                chain.chain = [Comp.At(qq="all"), Comp.Plain("\n"), Comp.Image(file=url)]
-            else:
-                chain.chain = [Comp.Image(file=url)]
-            await self._broadcast_chain(chain)
-            return
-        except Exception as e:
-            logger.warning(f"通知图片渲染失败，回退纯文本: {e}")
-        chain = self._render_template_chain(fallback)
+    async def _broadcast_notification(self, text: str, has_at_all: bool):
+        """广播服务器事件纯文本通知，支持 @全体"""
+        chain = self._render_template_chain(text) if has_at_all else MessageChain().message(text)
         await self._broadcast_chain(chain)
 
     async def _send_alert(self):
-        """发送离线告警通知（图片 + 可选 @全体）"""
-        raw = self.alert_template.format(count=self._fail_count, at_all="").strip()
+        """发送离线告警纯文本通知"""
+        text = self.alert_template.format(count=self._fail_count, at_all="{at_all}")
         has_at_all = "{at_all}" in self.alert_template
-        now_str = datetime.now(tz=timezone(timedelta(hours=8))).strftime("%H:%M")
-        md_text = f"# 🚨 离线告警\n\n---\n\n**{raw}**\n- 连续失败: {self._fail_count} 次\n- ⏰ {now_str}\n"
-        fallback = self.alert_template.format(count=self._fail_count, at_all="{at_all}")
-        await self._broadcast_notification(md_text, fallback, has_at_all)
+        await self._broadcast_notification(text, has_at_all)
 
     async def _process_and_broadcast_events(self, events: list[dict]):
         """将事件放入缓冲区，延迟合并后广播；buffer_seconds=0 时立即发送"""
@@ -609,9 +551,9 @@ class FiveMStatusPlugin(Star):
     async def _send_events(self, events: list[dict]):
         """格式化事件并广播到所有推送目标"""
         if self.notify_server_events:
-            md_text, fallback, has_at_all = self._build_server_notification(events)
-            if md_text:
-                await self._broadcast_notification(md_text, fallback, has_at_all)
+            text, has_at_all = self._build_server_notification(events)
+            if text:
+                await self._broadcast_notification(text, has_at_all)
         if self.notify_player_events:
             lines = self._format_player_lines(events)
             if lines:
