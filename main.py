@@ -10,7 +10,6 @@ from aiohttp import web
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
-from astrbot.core.star.star_tools import StarTools
 import astrbot.api.message_components as Comp
 
 

@@ -119,7 +119,7 @@
             "render_image": {
                 "description": "图片渲染",
                 "type": "bool",
-                "hint": "查询类命令的回复渲染为精美图片卡片（需 AstrBot 已安装 Playwright），关闭后回退为纯文本",
+                "hint": "查询类命令的回复渲染为图片卡片（使用 AstrBot 文转图服务），关闭后回退为纯文本",
                 "default": true
             },
             "server_start_template": {
