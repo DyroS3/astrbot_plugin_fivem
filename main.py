@@ -252,10 +252,7 @@ class FiveMStatusPlugin(Star):
         if not self.admin_token:
             return {"success": False, "message": "未配置 admin_token，无法执行远程管理操作"}
         url = f"{self.server_url.rstrip('/')}{path}"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.admin_token}",
-        }
+        headers = {"Authorization": f"Bearer {self.admin_token}"}
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=self.timeout)
@@ -601,45 +598,41 @@ class FiveMStatusPlugin(Star):
     def fivem(self):
         pass
 
+    async def _do_server_status(self, event: AstrMessageEvent):
+        """服务器状态查询核心逻辑（命令与 LLM 工具共用）"""
+        data = await self._request("/status")
+        if data is None:
+            yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
+            return
+        if not data.get("success"):
+            yield event.plain_result("❌ 服务器返回异常数据。")
+            return
+        tmpl_data = self._build_status_tmpl_data(data)
+        async for result in self._render_image(event, TMPL_STATUS, tmpl_data, self._format_status(data)):
+            yield result
+
     @fivem.command("状态")
     async def server_status(self, event: AstrMessageEvent):
         """查询服务器在线状态与职业人数"""
         if cd := self._check_cooldown(event):
             yield event.plain_result(cd)
             return
-        data = await self._request("/status")
-        if data is None:
-            yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
-            return
-
-        if not data.get("success"):
-            yield event.plain_result("❌ 服务器返回异常数据。")
-            return
-
-        tmpl_data = self._build_status_tmpl_data(data)
-        async for result in self._render_image(event, TMPL_STATUS, tmpl_data, self._format_status(data)):
+        async for result in self._do_server_status(event):
             yield result
 
-    @fivem.command("玩家")
-    async def players_list(self, event: AstrMessageEvent):
-        """查询在线玩家列表"""
-        if cd := self._check_cooldown(event):
-            yield event.plain_result(cd)
-            return
+    async def _do_player_list(self, event: AstrMessageEvent):
+        """玩家列表核心逻辑（命令与 LLM 工具共用）"""
         data = await self._request("/players")
         if data is None:
             yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
             return
-
         if not data.get("success"):
             yield event.plain_result("❌ 服务器返回异常数据。")
             return
-
         players = data["data"]
         if not players:
             yield event.plain_result("当前没有玩家在线。")
             return
-
         lines = [f"👥 在线玩家 ({len(players)} 人):"]
         tmpl_players = []
         for p in players:
@@ -651,10 +644,18 @@ class FiveMStatusPlugin(Star):
             suffix = f" ({duration})" if duration else ""
             lines.append(f"  [{pid}] {name} — {job_label}{suffix}")
             tmpl_players.append({"id": pid, "name": name, "job_label": job_label, "duration": duration})
-
         async for result in self._render_image(
             event, TMPL_PLAYERS, {"players": tmpl_players}, "\n".join(lines)
         ):
+            yield result
+
+    @fivem.command("玩家")
+    async def players_list(self, event: AstrMessageEvent):
+        """查询在线玩家列表"""
+        if cd := self._check_cooldown(event):
+            yield event.plain_result(cd)
+            return
+        async for result in self._do_player_list(event):
             yield result
 
     async def _resolve_job_name(self, keyword: str) -> tuple[str | None, str | None]:
@@ -695,31 +696,23 @@ class FiveMStatusPlugin(Star):
         all_jobs = "\n".join(f"  • {j['label']}（{j['name']}）" for j in jobs)
         return None, f"❌ 未找到匹配「{keyword}」的职业。可用职业:\n{all_jobs}"
 
-    @fivem.command("职业")
-    async def job_query(self, event: AstrMessageEvent, job_name: str):
-        """查询指定职业的在线玩家"""
-        if cd := self._check_cooldown(event):
-            yield event.plain_result(cd)
-            return
-        resolved, err = await self._resolve_job_name(job_name)
+    async def _do_job_query(self, event: AstrMessageEvent, job_keyword: str):
+        """职业查询核心逻辑（命令与 LLM 工具共用）"""
+        resolved, err = await self._resolve_job_name(job_keyword)
         if err:
             yield event.plain_result(err)
             return
-
         data = await self._request(f"/job/{resolved}")
         if data is None:
             yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
             return
-
         if not data.get("success"):
             yield event.plain_result("❌ 服务器返回异常数据。")
             return
-
         job = data["data"]
-        label = job.get("label", job.get("name", job_name))
+        label = job.get("label", job.get("name", job_keyword))
         online = job.get("online", 0)
         players = job.get("players", [])
-
         lines = [f"👔 {label} ({online} 人在线):"]
         tmpl_players = []
         if players:
@@ -730,26 +723,28 @@ class FiveMStatusPlugin(Star):
                 tmpl_players.append({"id": pid, "name": name})
         else:
             lines.append("  当前无人在线")
-
         tmpl_data = {"label": label, "online": online, "players": tmpl_players}
         async for result in self._render_image(event, TMPL_JOB, tmpl_data, "\n".join(lines)):
             yield result
 
-    @fivem.command("查找")
-    async def search_player(self, event: AstrMessageEvent, keyword: str):
-        """模糊搜索在线玩家（用法: /fivem 查找 玩家名）"""
+    @fivem.command("职业")
+    async def job_query(self, event: AstrMessageEvent, job_name: str):
+        """查询指定职业的在线玩家"""
         if cd := self._check_cooldown(event):
             yield event.plain_result(cd)
             return
+        async for result in self._do_job_query(event, job_name):
+            yield result
+
+    async def _do_search_player(self, event: AstrMessageEvent, keyword: str):
+        """玩家搜索核心逻辑（命令与 LLM 工具共用）"""
         data = await self._request("/players")
         if data is None:
             yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
             return
-
         if not data.get("success"):
             yield event.plain_result("❌ 服务器返回异常数据。")
             return
-
         kw = keyword.lower()
         results = []
         for p in data["data"]:
@@ -760,16 +755,23 @@ class FiveMStatusPlugin(Star):
                     "name": name,
                     "job_label": p.get("jobLabel", p.get("job", "")),
                 })
-
         lines = [f"🔍 搜索「{keyword}」 — 匹配 {len(results)} 人:"]
         if results:
             for r in results:
                 lines.append(f"  [{r['id']}] {r['name']} — {r['job_label']}")
         else:
             lines.append("  未找到匹配的在线玩家。")
-
         tmpl_data = {"keyword": keyword, "results": results}
         async for result in self._render_image(event, TMPL_SEARCH, tmpl_data, "\n".join(lines)):
+            yield result
+
+    @fivem.command("查找")
+    async def search_player(self, event: AstrMessageEvent, keyword: str):
+        """模糊搜索在线玩家（用法: /fivem 查找 玩家名）"""
+        if cd := self._check_cooldown(event):
+            yield event.plain_result(cd)
+            return
+        async for result in self._do_search_player(event, keyword):
             yield result
 
     def _build_trend_data(self, history: list[dict]) -> tuple[dict, list[str]] | None:
@@ -1113,15 +1115,7 @@ class FiveMStatusPlugin(Star):
 
         Args:
         '''
-        data = await self._request("/status")
-        if data is None:
-            yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
-            return
-        if not data.get("success"):
-            yield event.plain_result("❌ 服务器返回异常数据。")
-            return
-        tmpl_data = self._build_status_tmpl_data(data)
-        async for result in self._render_image(event, TMPL_STATUS, tmpl_data, self._format_status(data)):
+        async for result in self._do_server_status(event):
             yield result
 
     @filter.llm_tool(name="fivem_player_list")
@@ -1130,29 +1124,7 @@ class FiveMStatusPlugin(Star):
 
         Args:
         '''
-        data = await self._request("/players")
-        if data is None:
-            yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
-            return
-        if not data.get("success"):
-            yield event.plain_result("❌ 服务器返回异常数据。")
-            return
-        players = data["data"]
-        if not players:
-            yield event.plain_result("当前没有玩家在线。")
-            return
-        lines = [f"👥 在线玩家 ({len(players)} 人):"]
-        tmpl_players = []
-        for p in players:
-            pid = p.get("id", "?")
-            name = p.get("name", "未知")
-            job_label = p.get("jobLabel", p.get("job", ""))
-            online_sec = p.get("onlineSeconds")
-            duration = self._format_uptime(online_sec) if online_sec is not None else None
-            suffix = f" ({duration})" if duration else ""
-            lines.append(f"  [{pid}] {name} — {job_label}{suffix}")
-            tmpl_players.append({"id": pid, "name": name, "job_label": job_label, "duration": duration})
-        async for result in self._render_image(event, TMPL_PLAYERS, {"players": tmpl_players}, "\n".join(lines)):
+        async for result in self._do_player_list(event):
             yield result
 
     @filter.llm_tool(name="fivem_job_query")
@@ -1162,28 +1134,7 @@ class FiveMStatusPlugin(Star):
         Args:
             job_keyword(string): 要查询的职业名称或关键词，如 police、警察、ambulance、医疗 等
         '''
-        job_name, err = await self._resolve_job_name(job_keyword)
-        if err:
-            yield event.plain_result(err)
-            return
-        data = await self._request(f"/job/{job_name}")
-        if data is None:
-            yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
-            return
-        if not data.get("success"):
-            yield event.plain_result("❌ 服务器返回异常数据。")
-            return
-        job = data["data"]
-        label = job.get("label", job_name)
-        players = job.get("players", [])
-        lines = [f"👔 {label} 在线: {len(players)} 人"]
-        if not players:
-            lines.append("  当前没有该职业的在线玩家。")
-        else:
-            for p in players:
-                lines.append(f"  [{p.get('id', '?')}] {p.get('name', '未知')}")
-        tmpl_data = {"label": label, "online": len(players), "players": players}
-        async for result in self._render_image(event, TMPL_JOB, tmpl_data, "\n".join(lines)):
+        async for result in self._do_job_query(event, job_keyword):
             yield result
 
     @filter.llm_tool(name="fivem_player_search")
@@ -1193,30 +1144,7 @@ class FiveMStatusPlugin(Star):
         Args:
             player_name(string): 要搜索的玩家名称或关键词
         '''
-        data = await self._request("/players")
-        if data is None:
-            yield event.plain_result("❌ 无法连接到 FiveM 服务器，请稍后重试。")
-            return
-        if not data.get("success"):
-            yield event.plain_result("❌ 服务器返回异常数据。")
-            return
-        keyword = player_name.strip().lower()
-        matches = [p for p in data["data"] if keyword in p.get("name", "").lower()]
-        if not matches:
-            yield event.plain_result(f"🔍 未找到匹配 \"{player_name}\" 的在线玩家。")
-            return
-        lines = [f"🔍 搜索 \"{player_name}\" 匹配到 {len(matches)} 人:"]
-        tmpl_players = []
-        for p in matches:
-            pid = p.get("id", "?")
-            name = p.get("name", "未知")
-            job_label = p.get("jobLabel", p.get("job", ""))
-            online_sec = p.get("onlineSeconds")
-            duration = self._format_uptime(online_sec) if online_sec is not None else None
-            suffix = f" ({duration})" if duration else ""
-            lines.append(f"  [{pid}] {name} — {job_label}{suffix}")
-            tmpl_players.append({"id": pid, "name": name, "job_label": job_label, "duration": duration})
-        async for result in self._render_image(event, TMPL_SEARCH, {"keyword": player_name, "players": tmpl_players}, "\n".join(lines)):
+        async for result in self._do_search_player(event, player_name):
             yield result
 
     @filter.llm_tool(name="fivem_trend")
