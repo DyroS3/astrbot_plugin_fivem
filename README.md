@@ -1,10 +1,20 @@
 # AstrBot FiveM 服务器状态插件
 
-通过 QQ 查询 FiveM 服务器在线状态、职业人数等信息。
+通过 QQ 查询 FiveM 服务器在线状态、职业人数等信息，并接收服务器事件通知。
+
+本插件需要配合 FiveM 端 `fivem-server-status` 资源一起使用，兼容当前配套版本 `v1.7.0`。
+
+## 架构与依赖关系
+
+- FiveM 端负责提供 `/status`、`/players`、`/job/:name`、`/events`、`/health` 等 HTTP API
+- AstrBot 端负责 QQ 指令、定时推送、离线告警、订阅管理与 Webhook 接收
+- 如启用 Webhook，FiveM 会主动向 AstrBot 发送事件通知；否则由 AstrBot 定时轮询 `/events`
 
 ## 安装
 
-将 `astrbot_plugin` 目录复制到 AstrBot 的 `data/plugins/astrbot_plugin_fivem` 目录下，然后在 WebUI 中重载插件。
+1. 先在 FiveM 服务端部署配套 `fivem-server-status` 资源，并确认 `/health` 与 `/status` 可访问
+2. 将 `astrbot_plugin` 目录复制到 AstrBot 的 `data/plugins/astrbot_plugin_fivem` 目录下
+3. 在 AstrBot WebUI 中重载插件并填写配置
 
 ## 配置
 
@@ -16,12 +26,17 @@
 
 #### 推送设置
 - **auto_push_enabled** — 是否启用定时状态推送（默认关闭）
-- **auto_push_interval** — 推送/轮询间隔秒数（默认 300，最小 60）
-- **event_notify_enabled** — 是否启用事件通知：玩家动态 + txAdmin 事件（默认关闭）
+- **auto_push_interval** — 定时状态推送 / 事件轮询间隔秒数（默认 300，最小 60）
+- **event_notify_enabled** — 事件通知总开关：玩家动态 + txAdmin 事件（默认关闭）
+- **notify_player_events** — 是否推送玩家动态（连接 / 加入 / 离开）
+- **notify_server_events** — 是否推送服务器通知（txAdmin 公告 / 关服 / 重启）
 - **push_targets** — 推送目标列表（可直接填写 QQ 群号，插件会自动转换；也可通过 `/fivem 订阅` 命令自动添加）
-- **webhook_enabled** — 是否启用 Webhook 实时推送（默认关闭）
+- **webhook_enabled** — 是否启用 Webhook 实时推送（默认关闭；开启后事件通知改为实时推送，不再轮询）
 - **webhook_port** — Webhook 监听端口（默认 5765）
 - **webhook_token** — Webhook 认证 Token（可选，留空不验证）
+
+#### 显示设置
+- **render_image** — 查询类命令回复是否渲染为图片卡片（默认开启；需 AstrBot 内置 Playwright 可用，关闭后回退纯文本）
 
 #### 告警设置
 - **alert_enabled** — 是否启用离线告警（默认开启）
@@ -38,6 +53,7 @@
 | `/fivem 玩家` | 查询在线玩家列表 |
 | `/fivem 职业 <关键词>` | 查询指定职业的在线玩家（支持中文/模糊匹配） |
 | `/fivem 检测` | 服务器健康检测 |
+| `/fivem 自检` | 检查 API、Webhook、订阅与通知配置 🔒 |
 | `/fivem 订阅` | 订阅当前会话接收推送/告警/事件通知 🔒 |
 | `/fivem 退订` | 取消当前会话的推送订阅 🔒 |
 | `/fivem 订阅列表` | 查看所有推送目标 🔒 |
@@ -92,11 +108,16 @@
 
 ## Webhook 实时推送
 
-默认的事件通知采用轮询模式（按 `auto_push_interval` 间隔拉取）。开启 Webhook 后，FiveM 端事件发生时会主动 POST 到 AstrBot 插件，延迟 <1 秒。
+默认的事件通知采用轮询模式（按 `auto_push_interval` 间隔拉取）。开启 Webhook 后，FiveM 端事件发生时会主动 POST 到 AstrBot 插件，延迟 <1 秒；此时插件不再轮询 `/events`，以避免重复推送。
+
+如果你希望减少群消息噪声，可以只开启以下其中一类：
+
+- `notify_player_events`：只推送玩家动态
+- `notify_server_events`：只推送服务器通知
 
 ### 配置步骤
 
-1. AstrBot WebUI → 推送设置 → 开启 **webhook_enabled**，设置端口和 Token
+1. AstrBot WebUI → 推送设置 → 开启 **event_notify_enabled** 与 **webhook_enabled**，设置端口和 Token
 2. FiveM `config.lua` → 填写 `WebhookURL` 和 `WebhookToken`：
    ```lua
    WebhookURL = 'http://AstrBot所在IP:5765/webhook/fivem',
@@ -104,7 +125,56 @@
    ```
 3. 重启 FiveM 资源即可
 
-> Webhook 与轮询可共存：Webhook 负责实时推送，轮询作为备用保障。也可单独使用 Webhook，关闭 `event_notify_enabled` 以避免重复推送。
+> `event_notify_enabled` 是事件通知总开关；`webhook_enabled` 是事件通知的实时传输模式。开启 Webhook 后，插件不会再轮询事件队列。
+
+## 快速验证
+
+建议首次部署后按以下顺序验证：
+
+1. 直接访问 FiveM `/health`，确认返回 `{"status":"ok"}`
+2. 直接访问 FiveM `/status`，确认返回带 `success = true` 的 JSON
+3. 在 QQ 中执行 `/fivem 状态`
+4. 管理员在目标群执行 `/fivem 自检`
+5. 在目标群执行 `/fivem 订阅`
+6. 触发玩家上下线或 txAdmin 事件，确认群内收到推送
+
+## 常见排障
+
+### `/fivem 状态` 提示无法连接到 FiveM 服务器
+
+优先检查：
+
+- `connection.server_url` 是否填写正确
+- AstrBot 所在机器是否能访问 FiveM HTTP 端口
+- FiveM 资源是否已成功加载
+- FiveM `/health` 与 `/status` 是否可直接访问
+
+### 访问 FiveM `/status` 返回 403
+
+通常说明 `WhitelistIPs` 未包含当前来源 IP。需要检查：
+
+- AstrBot 所在机器的出口 IP
+- 是否经过反向代理
+- 代理是否正确传递 `X-Forwarded-For` 或 `X-Real-IP`
+
+### 开启 Webhook 后没有收到事件推送
+
+优先检查：
+
+- `event_notify_enabled` 是否开启
+- `webhook_enabled` 是否开启
+- FiveM `WebhookURL` 是否能访问到 AstrBot
+- `webhook_token` 与 `WebhookToken` 是否一致
+- Webhook 监听端口是否已放行
+
+### 已订阅但没有收到消息
+
+优先检查：
+
+- 当前会话是否真的执行成功 `/fivem 订阅`
+- `push_targets` 是否已保存
+- 管理员权限是否限制了订阅操作
+- 当前是否实际触发了推送条件（定时推送 / 告警 / 事件通知）
 
 ## 依赖
 

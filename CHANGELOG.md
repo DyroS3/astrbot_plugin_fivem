@@ -1,5 +1,28 @@
 # 更新日志
 
+## v1.7.0
+
+### 新功能
+
+- **图片卡片渲染**：查询类命令（状态/玩家/职业/自检/帮助）的回复渲染为精美深色风格图片卡片，提升 QQ 群内展示效果
+  - 使用 AstrBot 内置 `html_render`（HTML + Jinja2）实现，无额外依赖
+  - 新增 `display.render_image` 配置项，可在 WebUI 关闭图片渲染回退纯文本
+  - 渲染失败时自动降级为纯文本，保证可用性
+- **新增模板文件** `templates.py`：包含 5 套 HTML 卡片模板（状态/玩家/职业/自检/帮助）
+
+## v1.6.0
+
+### 新功能
+
+- **新增 `/fivem 自检`**：管理员可快速检查 FiveM API、Webhook、订阅状态、后台任务与关键配置是否正常
+
+### 改进
+
+- **事件通知粒度控制**：新增 `notify_player_events` 与 `notify_server_events`，可分别控制玩家动态与服务器通知
+- **订阅列表可读性优化**：订阅目标优先显示为友好的 QQ 群 / 私聊格式，并保留原始 UMO 便于排障
+- **管理员帮助信息优化**：帮助命令按查询类与管理员类分组展示，降低上手成本
+- **订阅反馈增强**：订阅 / 退订后会显示当前订阅总数，便于管理员确认配置状态
+
 ## v1.5.0
 
 ### 新功能
@@ -8,7 +31,7 @@
   - AstrBot 插件启动 HTTP 服务监听 Webhook（`webhook_enabled` / `webhook_port`）
   - FiveM Lua 端事件触发时自动 `PerformHttpRequest` 推送
   - 支持 Bearer Token 认证（`webhook_token` / `WebhookToken`）
-  - Webhook 与轮询可共存，互不冲突
+  - 启用 Webhook 后，事件通知不再轮询 `/events`；定时状态推送与离线告警仍可继续工作
 
 ### 改进
 

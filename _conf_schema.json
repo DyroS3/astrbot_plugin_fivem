@@ -33,14 +33,26 @@
             "auto_push_interval": {
                 "description": "推送间隔（秒）",
                 "type": "int",
-                "hint": "定时推送 / 事件轮询的时间间隔，最小 60 秒",
+                "hint": "定时状态推送 / 事件轮询的时间间隔，最小 60 秒；启用 Webhook 实时推送后将不再轮询事件",
                 "default": 300
             },
             "event_notify_enabled": {
                 "description": "启用事件通知（玩家动态 + txAdmin）",
                 "type": "bool",
-                "hint": "开启后，定时轮询 FiveM 端事件队列，推送玩家上下线和 txAdmin 公告/重启等通知",
+                "hint": "事件通知总开关；开启后推送玩家上下线和 txAdmin 公告/重启等通知，关闭后轮询与 Webhook 事件推送都会停用",
                 "default": false
+            },
+            "notify_player_events": {
+                "description": "推送玩家动态",
+                "type": "bool",
+                "hint": "控制是否推送玩家连接、加入和离开事件；仅在启用事件通知时生效",
+                "default": true
+            },
+            "notify_server_events": {
+                "description": "推送服务器通知",
+                "type": "bool",
+                "hint": "控制是否推送 txAdmin 公告、关服和计划重启通知；仅在启用事件通知时生效",
+                "default": true
             },
             "push_targets": {
                 "description": "推送目标列表",
@@ -51,7 +63,7 @@
             "webhook_enabled": {
                 "description": "启用 Webhook 实时推送",
                 "type": "bool",
-                "hint": "开启后，插件会启动 HTTP 服务接收 FiveM 端的实时事件推送（公告/玩家动态等），延迟 <1 秒",
+                "hint": "开启后，插件会启动 HTTP 服务接收 FiveM 端的实时事件推送（公告/玩家动态等），延迟 <1 秒；该模式会替代事件轮询，避免重复推送",
                 "default": false
             },
             "webhook_port": {
@@ -84,6 +96,19 @@
                 "type": "int",
                 "hint": "连续多少次检测失败后触发告警，避免网络抖动误报",
                 "default": 3
+            }
+        }
+    },
+    "display": {
+        "description": "显示设置",
+        "type": "object",
+        "hint": "控制机器人回复的展示方式",
+        "items": {
+            "render_image": {
+                "description": "图片渲染",
+                "type": "bool",
+                "hint": "查询类命令的回复渲染为精美图片卡片（需 AstrBot 已安装 Playwright），关闭后回退为纯文本",
+                "default": true
             }
         }
     },
