@@ -1,0 +1,103 @@
+{
+    "connection": {
+        "description": "连接设置",
+        "type": "object",
+        "hint": "FiveM 服务器连接相关配置",
+        "items": {
+            "server_url": {
+                "description": "FiveM 服务器状态 API 地址",
+                "type": "string",
+                "hint": "完整地址，如 http://你的服务器IP:30120/fivem-server-status",
+                "obvious_hint": true,
+                "default": "http://127.0.0.1:30120/fivem-server-status"
+            },
+            "timeout": {
+                "description": "请求超时（秒）",
+                "type": "int",
+                "hint": "向 FiveM 服务器发起 HTTP 请求的超时时间",
+                "default": 10
+            }
+        }
+    },
+    "push": {
+        "description": "推送设置",
+        "type": "object",
+        "hint": "定时推送、事件通知与推送目标管理",
+        "items": {
+            "auto_push_enabled": {
+                "description": "启用定时状态推送",
+                "type": "bool",
+                "hint": "开启后，插件将按设定间隔自动向订阅会话推送服务器在线状态",
+                "default": false
+            },
+            "auto_push_interval": {
+                "description": "推送间隔（秒）",
+                "type": "int",
+                "hint": "定时推送 / 事件轮询的时间间隔，最小 60 秒",
+                "default": 300
+            },
+            "event_notify_enabled": {
+                "description": "启用事件通知（玩家动态 + txAdmin）",
+                "type": "bool",
+                "hint": "开启后，定时轮询 FiveM 端事件队列，推送玩家上下线和 txAdmin 公告/重启等通知",
+                "default": false
+            },
+            "push_targets": {
+                "description": "推送目标列表",
+                "type": "list",
+                "hint": "可直接填写 QQ 群号（如 1072122007），插件会自动转换为完整格式；也可在群中发送 /fivem 订阅 自动添加",
+                "default": []
+            },
+            "webhook_enabled": {
+                "description": "启用 Webhook 实时推送",
+                "type": "bool",
+                "hint": "开启后，插件会启动 HTTP 服务接收 FiveM 端的实时事件推送（公告/玩家动态等），延迟 <1 秒",
+                "default": false
+            },
+            "webhook_port": {
+                "description": "Webhook 监听端口",
+                "type": "int",
+                "hint": "插件 HTTP 服务监听的端口号，确保不与其他服务冲突",
+                "default": 5765
+            },
+            "webhook_token": {
+                "description": "Webhook 认证 Token",
+                "type": "string",
+                "hint": "可选的安全令牌，需与 FiveM 端 config.lua 中的 WebhookToken 保持一致，留空则不验证",
+                "default": ""
+            }
+        }
+    },
+    "alert": {
+        "description": "告警设置",
+        "type": "object",
+        "hint": "服务器离线告警相关配置",
+        "items": {
+            "alert_enabled": {
+                "description": "启用离线告警",
+                "type": "bool",
+                "hint": "开启后，当服务器连续不可达时自动向订阅会话推送告警",
+                "default": true
+            },
+            "alert_threshold": {
+                "description": "告警阈值（连续失败次数）",
+                "type": "int",
+                "hint": "连续多少次检测失败后触发告警，避免网络抖动误报",
+                "default": 3
+            }
+        }
+    },
+    "permission": {
+        "description": "权限设置",
+        "type": "object",
+        "hint": "管理指令权限控制",
+        "items": {
+            "admin_ids": {
+                "description": "管理员 ID 列表",
+                "type": "list",
+                "hint": "拥有订阅/退订等管理指令权限的用户 ID（QQ 号），留空则所有人可用",
+                "default": []
+            }
+        }
+    }
+}
