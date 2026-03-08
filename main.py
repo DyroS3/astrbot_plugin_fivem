@@ -563,7 +563,7 @@ class FiveMStatusPlugin(Star):
             try:
                 url = await self.html_render(
                     TMPL_NOTIFICATION, tmpl_data,
-                    options={"type": "png", "viewport_width": CARD_VIEWPORT_WIDTH},
+                    options={"type": "png", "viewport_width": CARD_VIEWPORT_WIDTH, "full_page": True},
                 )
                 chain = MessageChain()
                 if has_at_all:
