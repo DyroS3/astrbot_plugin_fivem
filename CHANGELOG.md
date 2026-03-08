@@ -1,5 +1,13 @@
 # 更新日志
 
+## v1.8.1
+
+### 修复
+
+- **uptime 计算修正**：Lua 端 `os.clock()` 返回 CPU 时间而非挂钟时间，改为 `os.time() - _StartTime` 确保 uptime 准确
+- **事件缓冲区滞留修复**：`_flush_events` 在 `_send_events` 网络 IO 期间到达的新事件可能被滞留，改为 `while` 循环处理
+- **代码清理**：移除未使用的 `import time`
+
 ## v1.8.0
 
 ### 新功能

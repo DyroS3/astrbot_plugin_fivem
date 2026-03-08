@@ -14,7 +14,7 @@ from .templates import (
 )
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询 FiveM 服务器在线状态", "1.8.0")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询 FiveM 服务器在线状态", "1.8.1")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
