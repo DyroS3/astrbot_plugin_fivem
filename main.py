@@ -15,14 +15,14 @@ import astrbot.api.message_components as Comp
 
 from .templates import (
     TMPL_STATUS, TMPL_PLAYERS, TMPL_JOB, TMPL_SELFCHECK, TMPL_HELP, TMPL_SEARCH, TMPL_TREND,
-    TMPL_NOTIFICATION, CARD_VIEWPORT_WIDTH,
+    CARD_VIEWPORT_WIDTH,
 )
 
 _HISTORY_FILE = Path(__file__).parent / "_history.json"
 _HISTORY_RETENTION = 24 * 3600  # 保留 24 小时数据
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.14.1")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.14.2")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -463,11 +463,12 @@ class FiveMStatusPlugin(Star):
                 lines.append(f"  🔴 {id_tag}{name}{job_suffix} 离开了服务器{reason_suffix}")
         return lines
 
-    def _build_server_notification(self, events: list[dict]) -> tuple[dict | None, str, bool]:
-        """构建服务器事件通知卡片数据。返回 (模板数据, 纯文本fallback, 是否@全体)"""
-        items = []
-        fallback_lines = []
+    def _build_server_notification(self, events: list[dict]) -> tuple[str | None, str, bool]:
+        """构建服务器事件通知文本。返回 (Markdown 图片文本, 纯文本 fallback, 是否@全体)"""
+        md_lines: list[str] = []
+        fallback_lines: list[str] = []
         has_at_all = False
+        icon_map = {"ok": "✅", "info": "📢", "warn": "⏰", "err": "🔴"}
         severity = "ok"
         sev_order = {"ok": 0, "info": 1, "warn": 2, "err": 3}
 
@@ -476,13 +477,16 @@ class FiveMStatusPlugin(Star):
             if etype in ("connecting", "join", "leave"):
                 continue
             t_str = self._get_event_time(ev)
-            show_time = t_str if ev.get("time") else None
 
             if etype == "announcement":
                 author = ev.get("author", "txAdmin")
                 message = ev.get("message", "")
-                items.append({"color": "info", "title": f"📢 管理员公告 ({author})",
-                              "details": [{"label": "内容", "value": message}] if message else [], "time": show_time})
+                md_lines.append(f"**📢 管理员公告 ({author})**")
+                if message:
+                    md_lines.append(f"- 内容: {message}")
+                if ev.get("time"):
+                    md_lines.append(f"- ⏰ {t_str}")
+                md_lines.append("")
                 fallback_lines.append(f"  📢 管理员公告 ({author}): {message}")
                 if sev_order["info"] > sev_order[severity]:
                     severity = "info"
@@ -495,10 +499,12 @@ class FiveMStatusPlugin(Star):
                 title = self.shutdown_template.format(author=author, delay=delay_sec, message=message, time=t_str, at_all="").strip()
                 if "{at_all}" in self.shutdown_template:
                     has_at_all = True
-                details = []
+                md_lines.append(f"**🔴 {title}**")
                 if message and "{message}" not in self.shutdown_template:
-                    details.append({"label": "附加消息", "value": message})
-                items.append({"color": "err", "title": title, "details": details, "time": show_time})
+                    md_lines.append(f"- 附加消息: {message}")
+                if ev.get("time"):
+                    md_lines.append(f"- ⏰ {t_str}")
+                md_lines.append("")
                 fb = self.shutdown_template.format(author=author, delay=delay_sec, message=message, time=t_str, at_all="{at_all}")
                 if message and "{message}" not in self.shutdown_template:
                     fb += f": {message}"
@@ -511,7 +517,10 @@ class FiveMStatusPlugin(Star):
                 title = self.restart_template.format(minutes=minutes, seconds=seconds, time=t_str, at_all="").strip()
                 if "{at_all}" in self.restart_template:
                     has_at_all = True
-                items.append({"color": "warn", "title": title, "details": [], "time": show_time})
+                md_lines.append(f"**⏰ {title}**")
+                if ev.get("time"):
+                    md_lines.append(f"- ⏰ {t_str}")
+                md_lines.append("")
                 fb = self.restart_template.format(minutes=minutes, seconds=seconds, time=t_str, at_all="{at_all}")
                 fallback_lines.append(f"  {fb}")
                 if sev_order["warn"] > sev_order[severity]:
@@ -524,16 +533,24 @@ class FiveMStatusPlugin(Star):
                 title = self.server_start_template.format(server_name=sn, time=t_str, players=players, max_players=max_p, at_all="").strip()
                 if "{at_all}" in self.server_start_template:
                     has_at_all = True
-                details = [{"label": "在线 / 最大", "value": f"{players} / {max_p}"}] if max_p else []
-                items.append({"color": "ok", "title": title, "details": details, "time": show_time})
+                md_lines.append(f"**✅ {title}**")
+                if max_p:
+                    md_lines.append(f"- 在线 / 最大: {players} / {max_p}")
+                if ev.get("time"):
+                    md_lines.append(f"- ⏰ {t_str}")
+                md_lines.append("")
                 fb = self.server_start_template.format(server_name=sn, time=t_str, players=players, max_players=max_p, at_all="{at_all}")
                 fallback_lines.append(f"  {fb}")
 
             elif etype == "custom":
                 ctitle = ev.get("title", "自定义事件")
                 message = ev.get("message", "")
-                items.append({"color": "info", "title": f"🔔 {ctitle}",
-                              "details": [{"label": "内容", "value": message}] if message else [], "time": show_time})
+                md_lines.append(f"**🔔 {ctitle}**")
+                if message:
+                    md_lines.append(f"- 内容: {message}")
+                if ev.get("time"):
+                    md_lines.append(f"- ⏰ {t_str}")
+                md_lines.append("")
                 line = f"  🔔 {ctitle}"
                 if message:
                     line += f": {message}"
@@ -541,57 +558,38 @@ class FiveMStatusPlugin(Star):
                 if sev_order["info"] > sev_order[severity]:
                     severity = "info"
 
-        if not items:
+        if not md_lines:
             return None, "", False
 
-        color_map = {"ok": ("#00d4aa", "#00b894"), "info": ("#58a6ff", "#388bfd"),
-                     "warn": ("#ffc107", "#ff9800"), "err": ("#ff5252", "#e53935")}
-        icon_map = {"ok": "✅", "info": "📢", "warn": "⏰", "err": "🔴"}
-        c_from, c_to = color_map[severity]
-        tmpl_data = {
-            "header_icon": icon_map[severity], "header_title": "服务器通知",
-            "header_sub": f"Server Notification · {len(items)} 条",
-            "header_color_from": c_from, "header_color_to": c_to,
-            "events": items,
-        }
+        header = f"# {icon_map[severity]} 服务器通知 ({len(fallback_lines)} 条)\n\n---\n"
+        md_text = header + "\n".join(md_lines)
         fallback = f"🖥️ 服务器通知 ({len(fallback_lines)} 条):\n" + "\n".join(fallback_lines)
-        return tmpl_data, fallback, has_at_all
+        return md_text, fallback, has_at_all
 
-    async def _broadcast_notification(self, tmpl_data: dict, fallback: str, has_at_all: bool):
-        """渲染通知卡片并广播；支持 @全体 + 图片并发；渲染失败回退纯文本"""
-        if self.render_image:
-            try:
-                url = await self.html_render(
-                    TMPL_NOTIFICATION, tmpl_data,
-                    options={"type": "png", "viewport_width": CARD_VIEWPORT_WIDTH, "viewport_height": 1, "full_page": True},
-                )
-                chain = MessageChain()
-                if has_at_all:
-                    chain.chain = [Comp.At(qq="all"), Comp.Plain("\n"), Comp.Image(file=url)]
-                else:
-                    chain.chain = [Comp.Image(file=url)]
-                await self._broadcast_chain(chain)
-                return
-            except Exception as e:
-                logger.warning(f"通知图片渲染失败，回退纯文本: {e}")
+    async def _broadcast_notification(self, md_text: str, fallback: str, has_at_all: bool):
+        """将 Markdown 文本渲染为图片并广播；支持 @全体；渲染失败回退纯文本"""
+        try:
+            url = await self.text_to_image(md_text)
+            chain = MessageChain()
+            if has_at_all:
+                chain.chain = [Comp.At(qq="all"), Comp.Plain("\n"), Comp.Image(file=url)]
+            else:
+                chain.chain = [Comp.Image(file=url)]
+            await self._broadcast_chain(chain)
+            return
+        except Exception as e:
+            logger.warning(f"通知图片渲染失败，回退纯文本: {e}")
         chain = self._render_template_chain(fallback)
         await self._broadcast_chain(chain)
 
     async def _send_alert(self):
-        """发送离线告警通知（图片卡片 + 可选 @全体）"""
+        """发送离线告警通知（图片 + 可选 @全体）"""
         raw = self.alert_template.format(count=self._fail_count, at_all="").strip()
         has_at_all = "{at_all}" in self.alert_template
         now_str = datetime.now(tz=timezone(timedelta(hours=8))).strftime("%H:%M")
-        tmpl_data = {
-            "header_icon": "🚨", "header_title": "离线告警",
-            "header_sub": "Server Offline Alert",
-            "header_color_from": "#ff5252", "header_color_to": "#e53935",
-            "events": [{"color": "err", "title": raw,
-                        "details": [{"label": "连续失败", "value": f"{self._fail_count} 次"}],
-                        "time": now_str}],
-        }
+        md_text = f"# 🚨 离线告警\n\n---\n\n**{raw}**\n- 连续失败: {self._fail_count} 次\n- ⏰ {now_str}\n"
         fallback = self.alert_template.format(count=self._fail_count, at_all="{at_all}")
-        await self._broadcast_notification(tmpl_data, fallback, has_at_all)
+        await self._broadcast_notification(md_text, fallback, has_at_all)
 
     async def _process_and_broadcast_events(self, events: list[dict]):
         """将事件放入缓冲区，延迟合并后广播；buffer_seconds=0 时立即发送"""
@@ -613,9 +611,9 @@ class FiveMStatusPlugin(Star):
     async def _send_events(self, events: list[dict]):
         """格式化事件并广播到所有推送目标"""
         if self.notify_server_events:
-            tmpl_data, fallback, has_at_all = self._build_server_notification(events)
-            if tmpl_data:
-                await self._broadcast_notification(tmpl_data, fallback, has_at_all)
+            md_text, fallback, has_at_all = self._build_server_notification(events)
+            if md_text:
+                await self._broadcast_notification(md_text, fallback, has_at_all)
         if self.notify_player_events:
             lines = self._format_player_lines(events)
             if lines:
