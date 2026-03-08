@@ -1,5 +1,13 @@
 # 更新日志
 
+## v1.9.1
+
+### 改进
+
+- **在线时长改用 ESX 内置 API**：移除自定义 `_JoinTime` 表，改用 `xPlayer.getPlayTime()` 获取当前会话在线秒数，更准确且无需手动维护
+- **修复 playerConnecting 事件 ID 为 65536 的问题**：`playerConnecting` 阶段 `source` 始终为 65536，现已移除该 ID 字段，连接事件仅显示玩家名称
+- **事件格式化统一**：`join`/`leave` 事件改用可选 `id_tag`，ID 缺失时优雅降级
+
 ## v1.9.0
 
 ### 新功能

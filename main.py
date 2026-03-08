@@ -21,7 +21,7 @@ _HISTORY_FILE = Path(__file__).parent / "_history.json"
 _HISTORY_RETENTION = 24 * 3600  # 保留 24 小时数据
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询 FiveM 服务器在线状态", "1.9.0")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询 FiveM 服务器在线状态", "1.9.1")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -378,17 +378,18 @@ class FiveMStatusPlugin(Star):
             # ── 玩家事件 ──
             if etype in ("connecting", "join", "leave"):
                 name = ev.get("name", "未知")
-                pid = ev.get("id", "?")
+                pid = ev.get("id")
+                id_tag = f"[{pid}] " if pid else ""
                 job_label = ev.get("jobLabel", "")
                 job_suffix = f" [{job_label}]" if job_label else ""
                 if etype == "connecting":
-                    player_lines.append(f"  🟡 [{pid}] {name} 正在连接...")
+                    player_lines.append(f"  🟡 {name} 正在连接...")
                 elif etype == "join":
-                    player_lines.append(f"  🟢 [{pid}] {name}{job_suffix} 加入了服务器")
+                    player_lines.append(f"  🟢 {id_tag}{name}{job_suffix} 加入了服务器")
                 elif etype == "leave":
                     reason = ev.get("reason", "")
                     reason_suffix = f" ({reason})" if reason else ""
-                    player_lines.append(f"  🔴 [{pid}] {name}{job_suffix} 离开了服务器{reason_suffix}")
+                    player_lines.append(f"  🔴 {id_tag}{name}{job_suffix} 离开了服务器{reason_suffix}")
 
             # ── txAdmin 服务器事件 ──
             elif etype == "announcement":
