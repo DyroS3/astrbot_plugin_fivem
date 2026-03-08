@@ -21,7 +21,7 @@ _HISTORY_FILE = Path(__file__).parent / "_history.json"
 _HISTORY_RETENTION = 24 * 3600  # 保留 24 小时数据
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.12.0")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.12.1")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -47,6 +47,7 @@ class FiveMStatusPlugin(Star):
 
         display = config.get("display", {})
         self.render_image = display.get("render_image", True)
+        self.server_start_template = display.get("server_start_template", "✅ 服务器已启动: {server_name}")
 
         self.webhook_enabled = push.get("webhook_enabled", False)
         self.webhook_port = push.get("webhook_port", 5765)
@@ -460,8 +461,15 @@ class FiveMStatusPlugin(Star):
 
             # ── 服务器启动事件 ──
             elif etype == "server_start":
-                server_name = ev.get("serverName", "FiveM Server")
-                server_lines.append(f"  ✅ 服务器已启动: {server_name}")
+                ts = ev.get("time")
+                t_str = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8))).strftime("%H:%M") if ts else "--:--"
+                line = self.server_start_template.format(
+                    server_name=ev.get("serverName", "FiveM Server"),
+                    time=t_str,
+                    players=ev.get("totalPlayers", 0),
+                    max_players=ev.get("maxPlayers", 0),
+                )
+                server_lines.append(f"  {line}")
 
             # ── 自定义事件（外部资源通过 exports 推送） ──
             elif etype == "custom":

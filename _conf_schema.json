@@ -121,6 +121,13 @@
                 "type": "bool",
                 "hint": "查询类命令的回复渲染为精美图片卡片（需 AstrBot 已安装 Playwright），关闭后回退为纯文本",
                 "default": true
+            },
+            "server_start_template": {
+                "description": "服务器启动通知模板",
+                "type": "string",
+                "hint": "自定义服务器启动通知的文本内容。支持占位符: {server_name}=服务器名称, {time}=启动时间, {players}=当前在线人数, {max_players}=最大玩家数",
+                "obvious_hint": true,
+                "default": "✅ 服务器已启动: {server_name}"
             }
         }
     },

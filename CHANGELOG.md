@@ -1,5 +1,14 @@
 # 更新日志
 
+## v1.12.1
+
+### 改进
+
+- **启动通知模板自定义**：新增 `display.server_start_template` 配置项，可在 WebUI 自定义服务器启动通知文本
+  - 支持占位符: `{server_name}`（服务器名称）、`{time}`（启动时间）、`{players}`（当前在线人数）、`{max_players}`（最大玩家数）
+  - 默认模板: `✅ 服务器已启动: {server_name}`
+- **Lua 端 server_start 事件数据扩展**：新增 `maxPlayers` 和 `totalPlayers` 字段
+
 ## v1.12.0
 
 ### 新功能
