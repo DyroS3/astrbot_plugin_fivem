@@ -22,7 +22,7 @@ _HISTORY_FILE = Path(__file__).parent / "_history.json"
 _HISTORY_RETENTION = 24 * 3600  # 保留 24 小时数据
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.14.0")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.14.1")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -563,7 +563,7 @@ class FiveMStatusPlugin(Star):
             try:
                 url = await self.html_render(
                     TMPL_NOTIFICATION, tmpl_data,
-                    options={"type": "png", "viewport_width": CARD_VIEWPORT_WIDTH, "full_page": True},
+                    options={"type": "png", "viewport_width": CARD_VIEWPORT_WIDTH, "viewport_height": 1, "full_page": True},
                 )
                 chain = MessageChain()
                 if has_at_all:
