@@ -1,5 +1,4 @@
 import asyncio
-import time
 
 import aiohttp
 from aiohttp import web
@@ -370,11 +369,11 @@ class FiveMStatusPlugin(Star):
             self._flush_task = asyncio.create_task(self._flush_events())
 
     async def _flush_events(self):
-        """等待缓冲窗口结束后，批量发送所有缓冲事件"""
+        """等待缓冲窗口结束后，批量发送所有缓冲事件；若发送期间有新事件到达，循环处理"""
         await asyncio.sleep(self.event_buffer_seconds)
-        events = self._event_buffer
-        self._event_buffer = []
-        if events:
+        while self._event_buffer:
+            events = self._event_buffer
+            self._event_buffer = []
             await self._send_events(events)
 
     async def _send_events(self, events: list[dict]):
