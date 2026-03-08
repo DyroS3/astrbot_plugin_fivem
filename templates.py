@@ -13,17 +13,15 @@ _HEAD = """<!DOCTYPE html>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    background: #1a1a2e;
+    background: #0f0f1a;
     font-family: 'Noto Sans SC', 'Microsoft YaHei', 'PingFang SC', sans-serif;
     color: #e0e0e8;
-    padding: 16px;
+    margin: 0;
+    padding: 0;
   }
   .card {
-    background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
-    border-radius: 16px;
+    background: linear-gradient(180deg, #141425 0%, #0f0f1a 100%);
     padding: 24px;
-    border: 1px solid rgba(0, 212, 170, 0.15);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   }
   .card-title {
     font-size: 20px;
