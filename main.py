@@ -1,4 +1,8 @@
 import asyncio
+import json
+import time
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 import aiohttp
 from aiohttp import web
@@ -9,12 +13,15 @@ from astrbot.api import logger, AstrBotConfig
 from astrbot.core.star.star_tools import StarTools
 
 from .templates import (
-    TMPL_STATUS, TMPL_PLAYERS, TMPL_JOB, TMPL_SELFCHECK, TMPL_HELP, TMPL_SEARCH,
+    TMPL_STATUS, TMPL_PLAYERS, TMPL_JOB, TMPL_SELFCHECK, TMPL_HELP, TMPL_SEARCH, TMPL_TREND,
     CARD_VIEWPORT_WIDTH,
 )
 
+_HISTORY_FILE = Path(__file__).parent / "_history.json"
+_HISTORY_RETENTION = 24 * 3600  # 保留 24 小时数据
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询 FiveM 服务器在线状态", "1.8.1")
+
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询 FiveM 服务器在线状态", "1.9.0")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -88,6 +95,35 @@ class FiveMStatusPlugin(Star):
         self._ensure_push_dict()
         self.config["push"]["push_targets"] = list(self._push_targets)
         self.config.save_config()
+
+    # ── 历史数据持久化 ──
+
+    @staticmethod
+    def _load_history() -> list[dict]:
+        """从 JSON 文件加载历史数据点"""
+        try:
+            if _HISTORY_FILE.exists():
+                return json.loads(_HISTORY_FILE.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(f"加载历史数据失败: {e}")
+        return []
+
+    @staticmethod
+    def _save_history(history: list[dict]):
+        """将历史数据点写入 JSON 文件"""
+        try:
+            _HISTORY_FILE.write_text(json.dumps(history, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"保存历史数据失败: {e}")
+
+    def _record_data_point(self, count: int):
+        """记录一个在线人数数据点，并裁剪超出保留期的旧数据"""
+        now = int(time.time())
+        history = self._load_history()
+        history.append({"t": now, "c": count})
+        cutoff = now - _HISTORY_RETENTION
+        history = [p for p in history if p["t"] >= cutoff]
+        self._save_history(history)
 
     def _targets_match(self, left: str, right: str) -> bool:
         return left == right or self._resolve_target(left) == self._resolve_target(right)
@@ -278,6 +314,10 @@ class FiveMStatusPlugin(Star):
                 data = await self._request("/status")
                 ok = data is not None and data.get("success")
 
+                # ── 记录历史数据点 ──
+                if ok:
+                    self._record_data_point(data["data"].get("totalPlayers", 0))
+
                 # ── 离线告警逻辑 ──
                 if self.alert_enabled:
                     if not ok:
@@ -297,8 +337,20 @@ class FiveMStatusPlugin(Star):
 
                 # ── 定时推送 ──
                 if self.auto_push_enabled and ok:
-                    text = self._format_status(data)
-                    await self._broadcast(text)
+                    status = data["data"]
+                    total = status.get("totalPlayers", 0)
+                    max_p = status.get("maxPlayers", 0)
+                    ratio = round(total / max_p * 100) if max_p else 0
+                    uptime = status.get("uptime")
+                    tmpl_data = {
+                        "server_name": status.get("serverName", ""),
+                        "uptime": self._format_uptime(uptime) if uptime is not None else None,
+                        "total": total,
+                        "max_players": max_p,
+                        "ratio": ratio,
+                        "jobs": status.get("jobs", []),
+                    }
+                    await self._broadcast_image(TMPL_STATUS, tmpl_data, self._format_status(data))
 
                 # ── 玩家上下线事件通知 ──
                 if self.event_notify_enabled and (self.notify_player_events or self.notify_server_events) and not self.webhook_enabled and ok:
@@ -441,9 +493,28 @@ class FiveMStatusPlugin(Star):
             logger.warning(f"FiveM 插件：无法为群号 {target} 构造 UMO: {e}")
         return target
 
+    async def _broadcast_image(self, template: str, data: dict, fallback_text: str):
+        """尝试渲染图片卡片并广播到所有推送目标，失败则回退纯文本"""
+        if self.render_image:
+            try:
+                url = await self.html_render(
+                    template, data,
+                    options={"type": "png", "viewport_width": CARD_VIEWPORT_WIDTH},
+                )
+                chain = MessageChain().image(url)
+                await self._broadcast_chain(chain)
+                return
+            except Exception as e:
+                logger.warning(f"推送图片渲染失败，回退纯文本: {e}")
+        await self._broadcast(fallback_text)
+
     async def _broadcast(self, text: str):
-        """向所有绑定会话发送消息，支持纯群号自动转换"""
+        """向所有绑定会话发送纯文本消息"""
         chain = MessageChain().message(text)
+        await self._broadcast_chain(chain)
+
+    async def _broadcast_chain(self, chain: MessageChain):
+        """向所有绑定会话发送消息链，支持纯群号自动转换"""
         resolved_targets: set[str] = set()
         need_save = False
 
@@ -519,8 +590,11 @@ class FiveMStatusPlugin(Star):
             pid = p.get("id", "?")
             name = p.get("name", "未知")
             job_label = p.get("jobLabel", p.get("job", ""))
-            lines.append(f"  [{pid}] {name} — {job_label}")
-            tmpl_players.append({"id": pid, "name": name, "job_label": job_label})
+            online_sec = p.get("onlineSeconds")
+            duration = self._format_uptime(online_sec) if online_sec is not None else None
+            suffix = f" ({duration})" if duration else ""
+            lines.append(f"  [{pid}] {name} — {job_label}{suffix}")
+            tmpl_players.append({"id": pid, "name": name, "job_label": job_label, "duration": duration})
 
         async for result in self._render_image(
             event, TMPL_PLAYERS, {"players": tmpl_players}, "\n".join(lines)
@@ -634,6 +708,68 @@ class FiveMStatusPlugin(Star):
 
         tmpl_data = {"keyword": keyword, "results": results}
         async for result in self._render_image(event, TMPL_SEARCH, tmpl_data, "\n".join(lines)):
+            yield result
+
+    @fivem.command("趋势")
+    async def trend(self, event: AstrMessageEvent):
+        """查看最近 24 小时在线人数趋势图"""
+        history = self._load_history()
+        if len(history) < 2:
+            yield event.plain_result("📊 历史数据不足，至少需要 2 个数据点才能生成趋势图。\n提示：数据在定时推送轮询时自动采集。")
+            return
+
+        tz = timezone(timedelta(hours=8))
+        points = []
+        for p in history:
+            dt = datetime.fromtimestamp(p["t"], tz=tz)
+            points.append({"label": dt.strftime("%H:%M"), "count": p["c"], "ts": p["t"]})
+
+        counts = [p["count"] for p in points]
+        max_count = max(counts) if counts else 1
+        avg_count = round(sum(counts) / len(counts), 1)
+        peak_point = max(points, key=lambda p: p["count"])
+
+        lines = [
+            f"📊 最近 {len(points)} 个数据点趋势:",
+            f"  📈 峰值: {max_count} 人 ({peak_point['label']})",
+            f"  📉 均值: {avg_count} 人",
+            f"  📌 当前: {counts[-1]} 人",
+        ]
+
+        # ── 预计算 SVG 折线坐标 ──
+        chart_w, chart_h = 440, 180
+        margin_l, margin_b = 40, 24
+        y_max = max(max_count, 1)
+        n = len(points)
+        svg_points = []
+        for i, p in enumerate(points):
+            x = margin_l + (i / max(n - 1, 1)) * chart_w
+            y = chart_h - (p["count"] / y_max) * (chart_h - margin_b)
+            svg_points.append({"x": round(x, 1), "y": round(y, 1), "count": p["count"], "label": p["label"]})
+
+        # 选取均匀分布的时间标签（最多 6 个）
+        label_count = min(6, n)
+        label_indices = [round(i * (n - 1) / max(label_count - 1, 1)) for i in range(label_count)]
+        x_labels = [{"x": svg_points[i]["x"], "text": svg_points[i]["label"]} for i in label_indices]
+
+        polyline = " ".join(f"{p['x']},{p['y']}" for p in svg_points)
+
+        tmpl_data = {
+            "polyline": polyline,
+            "svg_points": svg_points,
+            "x_labels": x_labels,
+            "chart_w": chart_w + margin_l,
+            "chart_h": chart_h,
+            "y_max": y_max,
+            "margin_l": margin_l,
+            "margin_b": margin_b,
+            "max_count": max_count,
+            "avg_count": avg_count,
+            "peak_label": peak_point["label"],
+            "current": counts[-1],
+            "total_points": len(points),
+        }
+        async for result in self._render_image(event, TMPL_TREND, tmpl_data, "\n".join(lines)):
             yield result
 
     @fivem.command("检测")
@@ -797,6 +933,7 @@ class FiveMStatusPlugin(Star):
             "  /fivem 玩家         — 查询在线玩家列表",
             "  /fivem 职业 <名>    — 查询指定职业在线玩家",
             "  /fivem 查找 <名>    — 模糊搜索在线玩家",
+            "  /fivem 趋势         — 查看 24 小时在线人数趋势",
             "  /fivem 检测         — 服务器健康检测",
             "  /fivem 帮助         — 显示本帮助",
             "",
@@ -816,6 +953,7 @@ class FiveMStatusPlugin(Star):
                 {"usage": "/fivem 玩家", "desc": "查询在线玩家列表"},
                 {"usage": "/fivem 职业 <名>", "desc": "查询指定职业在线玩家"},
                 {"usage": "/fivem 查找 <名>", "desc": "模糊搜索在线玩家"},
+                {"usage": "/fivem 趋势", "desc": "24 小时在线人数趋势图"},
                 {"usage": "/fivem 检测", "desc": "服务器健康检测"},
                 {"usage": "/fivem 帮助", "desc": "显示本帮助"},
             ],

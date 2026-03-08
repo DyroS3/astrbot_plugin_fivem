@@ -13,6 +13,9 @@ build/
 *.swo
 *~
 
+# Runtime data
+_history.json
+
 # OS
 Thumbs.db
 .DS_Store

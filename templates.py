@@ -133,13 +133,15 @@ TMPL_PLAYERS = (
   <div class="row" style="font-size:14px; color:#8b949e; font-weight:600; padding:10px 16px;">
     <span style="width:50px;">ID</span>
     <span style="flex:1;">名称</span>
-    <span style="width:110px; text-align:right;">职业</span>
+    <span style="width:80px; text-align:right;">职业</span>
+    <span style="width:80px; text-align:right;">时长</span>
   </div>
   {% for p in players %}
   <div class="row {% if loop.index is odd %}row-alt{% endif %}">
     <span style="width:50px; color:#8b949e;">[{{ p.id }}]</span>
     <span style="flex:1;">{{ p.name }}</span>
-    <span style="width:110px; text-align:right; color:#00d4aa; font-size:14px;">{{ p.job_label }}</span>
+    <span style="width:80px; text-align:right; color:#00d4aa; font-size:14px;">{{ p.job_label }}</span>
+    <span style="width:80px; text-align:right; color:#8b949e; font-size:13px;">{{ p.duration or '-' }}</span>
   </div>
   {% endfor %}
   {% else %}
@@ -306,6 +308,54 @@ TMPL_SEARCH = (
   {% else %}
   <div style="text-align:center; padding:32px; color:#8b949e; font-size:18px;">未找到匹配「{{ keyword }}」的在线玩家</div>
   {% endif %}
+</div>
+<div class="footer">FiveM Server Status Plugin</div>
+"""
+    + _FOOT
+)
+
+# ── /fivem 趋势 ──
+
+TMPL_TREND = (
+    _HEAD
+    + """
+<div class="header">
+  <div class="header-title">📊 在线人数趋势</div>
+  <div class="header-sub">最近 {{ total_points }} 个数据点</div>
+</div>
+<div class="content">
+  <div style="display:flex; justify-content:space-between; margin-bottom:12px;">
+    <div style="text-align:center; flex:1;">
+      <div style="font-size:26px; font-weight:700; color:#f0f6fc;">{{ current }}</div>
+      <div style="font-size:13px; color:#8b949e;">当前在线</div>
+    </div>
+    <div style="text-align:center; flex:1;">
+      <div style="font-size:26px; font-weight:700; color:#00d4aa;">{{ max_count }}</div>
+      <div style="font-size:13px; color:#8b949e;">峰值 ({{ peak_label }})</div>
+    </div>
+    <div style="text-align:center; flex:1;">
+      <div style="font-size:26px; font-weight:700; color:#58a6ff;">{{ avg_count }}</div>
+      <div style="font-size:13px; color:#8b949e;">平均</div>
+    </div>
+  </div>
+  <div class="divider"></div>
+  <svg viewBox="0 0 {{ chart_w }} {{ chart_h }}" style="width:100%; height:auto; display:block; margin-top:8px;">
+    <line x1="{{ margin_l }}" y1="0" x2="{{ margin_l }}" y2="{{ chart_h - margin_b }}" stroke="#21262d" stroke-width="1"/>
+    <line x1="{{ margin_l }}" y1="{{ chart_h - margin_b }}" x2="{{ chart_w }}" y2="{{ chart_h - margin_b }}" stroke="#21262d" stroke-width="1"/>
+    <text x="{{ margin_l - 6 }}" y="12" text-anchor="end" fill="#8b949e" font-size="11">{{ y_max }}</text>
+    <text x="{{ margin_l - 6 }}" y="{{ chart_h - margin_b }}" text-anchor="end" fill="#8b949e" font-size="11">0</text>
+    <defs>
+      <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#00d4aa"/>
+        <stop offset="100%" stop-color="#0d1117"/>
+      </linearGradient>
+    </defs>
+    <polygon points="{{ margin_l }},{{ chart_h - margin_b }} {{ polyline }} {{ svg_points[-1].x }},{{ chart_h - margin_b }}" fill="url(#areaGrad)" opacity="0.3"/>
+    <polyline points="{{ polyline }}" fill="none" stroke="#00d4aa" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    {% for lbl in x_labels %}
+    <text x="{{ lbl.x }}" y="{{ chart_h - 4 }}" text-anchor="middle" fill="#8b949e" font-size="11">{{ lbl.text }}</text>
+    {% endfor %}
+  </svg>
 </div>
 <div class="footer">FiveM Server Status Plugin</div>
 """
