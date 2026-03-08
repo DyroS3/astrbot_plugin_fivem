@@ -15,14 +15,14 @@ import astrbot.api.message_components as Comp
 
 from .templates import (
     TMPL_STATUS, TMPL_PLAYERS, TMPL_JOB, TMPL_SELFCHECK, TMPL_HELP, TMPL_SEARCH, TMPL_TREND,
-    CARD_VIEWPORT_WIDTH,
+    TMPL_NOTIFICATION, CARD_VIEWPORT_WIDTH,
 )
 
 _HISTORY_FILE = Path(__file__).parent / "_history.json"
 _HISTORY_RETENTION = 24 * 3600  # 保留 24 小时数据
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.13.0")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.14.0")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -390,9 +390,7 @@ class FiveMStatusPlugin(Star):
                         self._fail_count += 1
                         if self._fail_count >= self.alert_threshold and not self._alerted:
                             self._alerted = True
-                            text = self.alert_template.format(count=self._fail_count)
-                            chain = self._render_template_chain(text)
-                            await self._broadcast_chain(chain)
+                            await self._send_alert()
                         continue
                     else:
                         if self._alerted:
@@ -437,80 +435,163 @@ class FiveMStatusPlugin(Star):
             chain.message(text)
         return chain
 
-    def _format_event_lines(self, events: list[dict]) -> tuple[list[str], list[str]]:
-        """将事件列表格式化为 (player_lines, server_lines)"""
-        player_lines = []
-        server_lines = []
+    @staticmethod
+    def _get_event_time(ev: dict) -> str:
+        ts = ev.get("time")
+        return datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8))).strftime("%H:%M") if ts else "--:--"
+
+    @staticmethod
+    def _format_player_lines(events: list[dict]) -> list[str]:
+        """将玩家事件格式化为纯文本行"""
+        lines = []
         for ev in events:
             etype = ev.get("type")
+            if etype not in ("connecting", "join", "leave"):
+                continue
+            name = ev.get("name", "未知")
+            pid = ev.get("id")
+            id_tag = f"[{pid}] " if pid else ""
+            job_label = ev.get("jobLabel", "")
+            job_suffix = f" [{job_label}]" if job_label else ""
+            if etype == "connecting":
+                lines.append(f"  🟡 {name} 正在连接...")
+            elif etype == "join":
+                lines.append(f"  🟢 {id_tag}{name}{job_suffix} 加入了服务器")
+            elif etype == "leave":
+                reason = ev.get("reason", "")
+                reason_suffix = f" ({reason})" if reason else ""
+                lines.append(f"  🔴 {id_tag}{name}{job_suffix} 离开了服务器{reason_suffix}")
+        return lines
 
-            # ── 玩家事件 ──
+    def _build_server_notification(self, events: list[dict]) -> tuple[dict | None, str, bool]:
+        """构建服务器事件通知卡片数据。返回 (模板数据, 纯文本fallback, 是否@全体)"""
+        items = []
+        fallback_lines = []
+        has_at_all = False
+        severity = "ok"
+        sev_order = {"ok": 0, "info": 1, "warn": 2, "err": 3}
+
+        for ev in events:
+            etype = ev.get("type")
             if etype in ("connecting", "join", "leave"):
-                name = ev.get("name", "未知")
-                pid = ev.get("id")
-                id_tag = f"[{pid}] " if pid else ""
-                job_label = ev.get("jobLabel", "")
-                job_suffix = f" [{job_label}]" if job_label else ""
-                if etype == "connecting":
-                    player_lines.append(f"  🟡 {name} 正在连接...")
-                elif etype == "join":
-                    player_lines.append(f"  🟢 {id_tag}{name}{job_suffix} 加入了服务器")
-                elif etype == "leave":
-                    reason = ev.get("reason", "")
-                    reason_suffix = f" ({reason})" if reason else ""
-                    player_lines.append(f"  🔴 {id_tag}{name}{job_suffix} 离开了服务器{reason_suffix}")
+                continue
+            t_str = self._get_event_time(ev)
+            show_time = t_str if ev.get("time") else None
 
-            # ── txAdmin 服务器事件 ──
-            elif etype == "announcement":
+            if etype == "announcement":
                 author = ev.get("author", "txAdmin")
                 message = ev.get("message", "")
-                server_lines.append(f"  📢 管理员公告 ({author}): {message}")
+                items.append({"color": "info", "title": f"📢 管理员公告 ({author})",
+                              "details": [{"label": "内容", "value": message}] if message else [], "time": show_time})
+                fallback_lines.append(f"  📢 管理员公告 ({author}): {message}")
+                if sev_order["info"] > sev_order[severity]:
+                    severity = "info"
+
             elif etype == "shutdown":
-                ts = ev.get("time")
-                t_str = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8))).strftime("%H:%M") if ts else "--:--"
                 author = ev.get("author", "txAdmin")
                 delay = ev.get("delay", 0)
                 message = ev.get("message", "")
                 delay_sec = round(delay / 1000) if delay else 0
-                line = self.shutdown_template.format(
-                    author=author, delay=delay_sec, message=message, time=t_str, at_all="{at_all}",
-                )
+                title = self.shutdown_template.format(author=author, delay=delay_sec, message=message, time=t_str, at_all="").strip()
+                if "{at_all}" in self.shutdown_template:
+                    has_at_all = True
+                details = []
                 if message and "{message}" not in self.shutdown_template:
-                    line += f": {message}"
-                server_lines.append(f"  {line}")
+                    details.append({"label": "附加消息", "value": message})
+                items.append({"color": "err", "title": title, "details": details, "time": show_time})
+                fb = self.shutdown_template.format(author=author, delay=delay_sec, message=message, time=t_str, at_all="{at_all}")
+                if message and "{message}" not in self.shutdown_template:
+                    fb += f": {message}"
+                fallback_lines.append(f"  {fb}")
+                severity = "err"
+
             elif etype == "restart":
-                ts = ev.get("time")
-                t_str = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8))).strftime("%H:%M") if ts else "--:--"
                 seconds = ev.get("secondsRemaining", 0)
                 minutes = round(seconds / 60)
-                line = self.restart_template.format(
-                    minutes=minutes, seconds=seconds, time=t_str, at_all="{at_all}",
-                )
-                server_lines.append(f"  {line}")
+                title = self.restart_template.format(minutes=minutes, seconds=seconds, time=t_str, at_all="").strip()
+                if "{at_all}" in self.restart_template:
+                    has_at_all = True
+                items.append({"color": "warn", "title": title, "details": [], "time": show_time})
+                fb = self.restart_template.format(minutes=minutes, seconds=seconds, time=t_str, at_all="{at_all}")
+                fallback_lines.append(f"  {fb}")
+                if sev_order["warn"] > sev_order[severity]:
+                    severity = "warn"
 
-            # ── 服务器启动事件 ──
             elif etype == "server_start":
-                ts = ev.get("time")
-                t_str = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8))).strftime("%H:%M") if ts else "--:--"
-                line = self.server_start_template.format(
-                    server_name=ev.get("serverName", "FiveM Server"),
-                    time=t_str,
-                    players=ev.get("totalPlayers", 0),
-                    max_players=ev.get("maxPlayers", 0),
-                    at_all="{at_all}",
-                )
-                server_lines.append(f"  {line}")
+                sn = ev.get("serverName", "FiveM Server")
+                players = ev.get("totalPlayers", 0)
+                max_p = ev.get("maxPlayers", 0)
+                title = self.server_start_template.format(server_name=sn, time=t_str, players=players, max_players=max_p, at_all="").strip()
+                if "{at_all}" in self.server_start_template:
+                    has_at_all = True
+                details = [{"label": "在线 / 最大", "value": f"{players} / {max_p}"}] if max_p else []
+                items.append({"color": "ok", "title": title, "details": details, "time": show_time})
+                fb = self.server_start_template.format(server_name=sn, time=t_str, players=players, max_players=max_p, at_all="{at_all}")
+                fallback_lines.append(f"  {fb}")
 
-            # ── 自定义事件（外部资源通过 exports 推送） ──
             elif etype == "custom":
-                title = ev.get("title", "自定义事件")
+                ctitle = ev.get("title", "自定义事件")
                 message = ev.get("message", "")
-                line = f"  🔔 {title}"
+                items.append({"color": "info", "title": f"🔔 {ctitle}",
+                              "details": [{"label": "内容", "value": message}] if message else [], "time": show_time})
+                line = f"  🔔 {ctitle}"
                 if message:
                     line += f": {message}"
-                server_lines.append(line)
+                fallback_lines.append(line)
+                if sev_order["info"] > sev_order[severity]:
+                    severity = "info"
 
-        return player_lines, server_lines
+        if not items:
+            return None, "", False
+
+        color_map = {"ok": ("#00d4aa", "#00b894"), "info": ("#58a6ff", "#388bfd"),
+                     "warn": ("#ffc107", "#ff9800"), "err": ("#ff5252", "#e53935")}
+        icon_map = {"ok": "✅", "info": "📢", "warn": "⏰", "err": "🔴"}
+        c_from, c_to = color_map[severity]
+        tmpl_data = {
+            "header_icon": icon_map[severity], "header_title": "服务器通知",
+            "header_sub": f"Server Notification · {len(items)} 条",
+            "header_color_from": c_from, "header_color_to": c_to,
+            "events": items,
+        }
+        fallback = f"🖥️ 服务器通知 ({len(fallback_lines)} 条):\n" + "\n".join(fallback_lines)
+        return tmpl_data, fallback, has_at_all
+
+    async def _broadcast_notification(self, tmpl_data: dict, fallback: str, has_at_all: bool):
+        """渲染通知卡片并广播；支持 @全体 + 图片并发；渲染失败回退纯文本"""
+        if self.render_image:
+            try:
+                url = await self.html_render(
+                    TMPL_NOTIFICATION, tmpl_data,
+                    options={"type": "png", "viewport_width": CARD_VIEWPORT_WIDTH},
+                )
+                chain = MessageChain()
+                if has_at_all:
+                    chain.chain = [Comp.At(qq="all"), Comp.Plain("\n"), Comp.Image(file=url)]
+                else:
+                    chain.chain = [Comp.Image(file=url)]
+                await self._broadcast_chain(chain)
+                return
+            except Exception as e:
+                logger.warning(f"通知图片渲染失败，回退纯文本: {e}")
+        chain = self._render_template_chain(fallback)
+        await self._broadcast_chain(chain)
+
+    async def _send_alert(self):
+        """发送离线告警通知（图片卡片 + 可选 @全体）"""
+        raw = self.alert_template.format(count=self._fail_count, at_all="").strip()
+        has_at_all = "{at_all}" in self.alert_template
+        now_str = datetime.now(tz=timezone(timedelta(hours=8))).strftime("%H:%M")
+        tmpl_data = {
+            "header_icon": "🚨", "header_title": "离线告警",
+            "header_sub": "Server Offline Alert",
+            "header_color_from": "#ff5252", "header_color_to": "#e53935",
+            "events": [{"color": "err", "title": raw,
+                        "details": [{"label": "连续失败", "value": f"{self._fail_count} 次"}],
+                        "time": now_str}],
+        }
+        fallback = self.alert_template.format(count=self._fail_count, at_all="{at_all}")
+        await self._broadcast_notification(tmpl_data, fallback, has_at_all)
 
     async def _process_and_broadcast_events(self, events: list[dict]):
         """将事件放入缓冲区，延迟合并后广播；buffer_seconds=0 时立即发送"""
@@ -531,14 +612,15 @@ class FiveMStatusPlugin(Star):
 
     async def _send_events(self, events: list[dict]):
         """格式化事件并广播到所有推送目标"""
-        player_lines, server_lines = self._format_event_lines(events)
-        if server_lines and self.notify_server_events:
-            text = f"🖥️ 服务器通知 ({len(server_lines)} 条):\n" + "\n".join(server_lines)
-            chain = self._render_template_chain(text)
-            await self._broadcast_chain(chain)
-        if player_lines and self.notify_player_events:
-            text = f"📡 玩家动态 ({len(player_lines)} 条):\n" + "\n".join(player_lines)
-            await self._broadcast(text)
+        if self.notify_server_events:
+            tmpl_data, fallback, has_at_all = self._build_server_notification(events)
+            if tmpl_data:
+                await self._broadcast_notification(tmpl_data, fallback, has_at_all)
+        if self.notify_player_events:
+            lines = self._format_player_lines(events)
+            if lines:
+                text = f"📡 玩家动态 ({len(lines)} 条):\n" + "\n".join(lines)
+                await self._broadcast(text)
 
     # ── Webhook 服务 ──
 

@@ -361,3 +361,69 @@ TMPL_TREND = (
 """
     + _FOOT
 )
+
+# ── 服务器通知卡片 ──
+
+TMPL_NOTIFICATION = (
+    _HEAD
+    + """
+<style>
+  .notif-item {
+    padding: 18px 20px;
+    border-left: 4px solid #30363d;
+    margin-bottom: 14px;
+    background: rgba(255,255,255,0.02);
+    border-radius: 0 8px 8px 0;
+  }
+  .notif-item.color-ok { border-left-color: #00d4aa; }
+  .notif-item.color-warn { border-left-color: #ffc107; }
+  .notif-item.color-err { border-left-color: #ff5252; }
+  .notif-item.color-info { border-left-color: #58a6ff; }
+  .notif-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: #f0f6fc;
+    margin-bottom: 8px;
+  }
+  .notif-detail {
+    display: flex;
+    justify-content: space-between;
+    padding: 5px 0;
+    font-size: 15px;
+    color: #8b949e;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .notif-detail:last-child { border-bottom: none; }
+  .notif-detail .label { color: #8b949e; }
+  .notif-detail .value { color: #c9d1d9; font-weight: 500; }
+  .notif-time {
+    font-size: 13px;
+    color: #484f58;
+    margin-top: 8px;
+    text-align: right;
+  }
+</style>
+<div class="header" style="background: linear-gradient(135deg, {{ header_color_from }} 0%, {{ header_color_to }} 100%);">
+  <div class="header-title">{{ header_icon }} {{ header_title }}</div>
+  <div class="header-sub">{{ header_sub }}</div>
+</div>
+<div class="content">
+  {% for item in events %}
+  <div class="notif-item color-{{ item.color }}">
+    <div class="notif-title">{{ item.title }}</div>
+    {% for d in item.details %}
+    <div class="notif-detail">
+      <span class="label">{{ d.label }}</span>
+      <span class="value">{{ d.value }}</span>
+    </div>
+    {% endfor %}
+    {% if item.time %}
+    <div class="notif-time">⏰ {{ item.time }}</div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+<div class="footer">FiveM Server Status Plugin</div>
+"""
+    + _FOOT
+)
