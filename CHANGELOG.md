@@ -1,5 +1,16 @@
 # 更新日志
 
+## v1.16.1
+
+### 修复
+
+- **隐私保护：隐藏内部英文代码名**：职业查询、玩家列表、状态卡片等所有面向用户的输出不再暴露服务器内部英文职业代码（如 `ambulance`、`police`），仅显示 ESX 框架配置的中文标签
+  - `_resolve_job_name`：匹配失败时列出的可用职业移除 `（英文名）` 后缀
+  - `_do_player_list` / `_do_search_player`：`jobLabel` 缺失时显示"未知"，不再回退到英文 `job` 字段
+  - `_build_status_tmpl_data` / `_format_status`：职业名只取 `label`，缺失时显示"未知"
+  - `_do_job_query`：label 缺失时回退到用户输入的关键词，不暴露英文 `name`
+  - `tool_job_query` LLM 工具描述：Args 示例移除英文职业名，避免 LLM 在回复中引用内部代码
+
 ## v1.16.0
 
 ### 修复

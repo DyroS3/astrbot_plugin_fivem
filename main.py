@@ -18,7 +18,7 @@ _HISTORY_FILE = Path(__file__).parent / "_history.json"
 _HISTORY_RETENTION = 24 * 3600  # 保留 24 小时数据
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.16.0")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.16.1")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -389,7 +389,7 @@ class FiveMStatusPlugin(Star):
             for job in jobs:
                 if not isinstance(job, dict):
                     continue
-                name = self._escape_md(job.get("label", job.get("name", "未知")))
+                name = self._escape_md(job.get("label", "") or "未知")
                 online = self._safe_int(job.get("online", 0))
                 lines.append(f"| {name} | {online} 人 |")
         return "\n".join(lines)
@@ -421,7 +421,7 @@ class FiveMStatusPlugin(Star):
             for job in jobs:
                 if not isinstance(job, dict):
                     continue
-                name = self._safe_text(job.get("label", job.get("name", "未知")))
+                name = self._safe_text(job.get("label", "") or "未知")
                 online = self._safe_int(job.get("online", 0))
                 lines.append(f"  • {name}: {online} 人")
 
@@ -847,7 +847,7 @@ class FiveMStatusPlugin(Star):
                 continue
             pid = self._safe_text(p.get("id", "?"))
             name = self._safe_text(p.get("name", "未知"))
-            job_label = self._safe_text(p.get("jobLabel", p.get("job", "")))
+            job_label = self._safe_text(p.get("jobLabel", "")) or "未知"
             online_sec = p.get("onlineSeconds")
             duration = self._format_uptime(self._safe_int(online_sec)) if online_sec is not None else None
             suffix = f" ({duration})" if duration else ""
@@ -909,11 +909,11 @@ class FiveMStatusPlugin(Star):
             return matches[0]["name"], None
 
         if len(matches) > 1:
-            options = "\n".join(f"  • {m['label']}（{m['name']}）" for m in matches)
+            options = "\n".join(f"  • {m['label']}" for m in matches)
             return None, f"⚠️ 匹配到多个职业，请更精确地输入:\n{options}"
 
         # 无匹配 → 列出所有可用职业
-        all_jobs = "\n".join(f"  • {j['label']}（{j['name']}）" for j in normalized_jobs)
+        all_jobs = "\n".join(f"  • {j['label']}" for j in normalized_jobs)
         return None, f"❌ 未找到匹配「{keyword}」的职业。可用职业:\n{all_jobs}"
 
     async def _do_job_query(self, event: AstrMessageEvent, job_keyword: str):
@@ -933,7 +933,7 @@ class FiveMStatusPlugin(Star):
         if not isinstance(job, dict):
             yield event.plain_result("❌ 服务器返回异常数据。")
             return
-        label = self._safe_text(job.get("label", job.get("name", job_keyword)))
+        label = self._safe_text(job.get("label", "")) or job_keyword
         online = self._safe_int(job.get("online", 0))
         players = job.get("players", [])
         if not isinstance(players, list):
@@ -987,7 +987,7 @@ class FiveMStatusPlugin(Star):
                 results.append({
                     "id": self._safe_text(p.get("id", "?")),
                     "name": name,
-                    "job_label": self._safe_text(p.get("jobLabel", p.get("job", ""))),
+                    "job_label": self._safe_text(p.get("jobLabel", "")) or "未知",
                 })
         fallback = [f"🔍 搜索「{keyword}」 — 匹配 {len(results)} 人:"]
         md = [f"# 🔍 搜索「{self._escape_md(keyword)}」 — 匹配 {len(results)} 人\n"]
@@ -1419,7 +1419,7 @@ class FiveMStatusPlugin(Star):
         '''查询 FiveM 游戏服务器中指定职业的在线玩家列表。支持模糊匹配职业名称，如"警察"、"医生"、"出租车"等。
 
         Args:
-            job_keyword(string): 要查询的职业名称或关键词，如 police、警察、ambulance、医疗 等
+            job_keyword(string): 要查询的职业名称或关键词，如 警察、医疗、出租车 等
         '''
         async for result in self._do_job_query(event, job_keyword):
             yield result
