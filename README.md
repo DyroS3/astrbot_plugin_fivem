@@ -2,7 +2,7 @@
 
 通过 QQ 查询和管理 FiveM 服务器，支持远程管理与 AI 自然语言查询。
 
-本插件需要配合 FiveM 端 `fivem-server-status` 资源一起使用，兼容当前配套版本 `v1.12.1`。
+本插件需要配合 FiveM 端 `fivem-server-status` 资源一起使用，兼容当前配套版本 `v1.13.0`。
 
 ## 架构与依赖关系
 
@@ -39,7 +39,12 @@
 
 #### 显示设置
 - **render_image** — 查询类命令回复是否渲染为图片卡片（默认开启；需 AstrBot 内置 Playwright 可用，关闭后回退纯文本）
-- **server_start_template** — 服务器启动通知模板（支持占位符: `{server_name}` 服务器名称、`{time}` 启动时间、`{players}` 在线人数、`{max_players}` 最大玩家数；默认 `✅ 服务器已启动: {server_name}`）
+- **server_start_template** — 服务器启动通知模板（占位符: `{server_name}` `{time}` `{players}` `{max_players}` `{at_all}`）
+- **shutdown_template** — 服务器关闭通知模板（占位符: `{author}` `{delay}` `{message}` `{time}` `{at_all}`）
+- **restart_template** — 计划重启通知模板（占位符: `{minutes}` `{seconds}` `{time}` `{at_all}`）
+- **alert_template** — 离线告警通知模板（占位符: `{count}` `{at_all}`）
+
+> 💡 在任意模板中加入 `{at_all}` 占位符即可自动 @全体成员，不加则不 @。
 
 #### 告警设置
 - **alert_enabled** — 是否启用离线告警（默认开启）

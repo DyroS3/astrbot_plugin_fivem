@@ -1,12 +1,15 @@
 # 更新日志
 
-## v1.12.1
+## v1.13.0
 
-### 改进
+### 新功能
 
-- **启动通知模板自定义**：新增 `display.server_start_template` 配置项，可在 WebUI 自定义服务器启动通知文本
-  - 支持占位符: `{server_name}`（服务器名称）、`{time}`（启动时间）、`{players}`（当前在线人数）、`{max_players}`（最大玩家数）
-  - 默认模板: `✅ 服务器已启动: {server_name}`
+- **服务器通知模板全面自定义**：四种服务器事件通知均支持 WebUI 自定义模板 + 占位符
+  - `display.server_start_template` — 占位符: `{server_name}` `{time}` `{players}` `{max_players}` `{at_all}`
+  - `display.shutdown_template` — 占位符: `{author}` `{delay}` `{message}` `{time}` `{at_all}`
+  - `display.restart_template` — 占位符: `{minutes}` `{seconds}` `{time}` `{at_all}`
+  - `display.alert_template` — 占位符: `{count}` `{at_all}`
+- **@全体成员占位符**：在任意通知模板中加入 `{at_all}` 即可自动 @全体成员，不加则不 @，完全由模板文本控制
 - **Lua 端 server_start 事件数据扩展**：新增 `maxPlayers` 和 `totalPlayers` 字段
 
 ## v1.12.0

@@ -11,6 +11,7 @@ from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
 from astrbot.core.star.star_tools import StarTools
+import astrbot.api.message_components as Comp
 
 from .templates import (
     TMPL_STATUS, TMPL_PLAYERS, TMPL_JOB, TMPL_SELFCHECK, TMPL_HELP, TMPL_SEARCH, TMPL_TREND,
@@ -21,7 +22,7 @@ _HISTORY_FILE = Path(__file__).parent / "_history.json"
 _HISTORY_RETENTION = 24 * 3600  # 保留 24 小时数据
 
 
-@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.12.1")
+@register("astrbot_plugin_fivem", "DingYu", "通过 QQ 查询和管理 FiveM 服务器", "1.13.0")
 class FiveMStatusPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -48,6 +49,9 @@ class FiveMStatusPlugin(Star):
         display = config.get("display", {})
         self.render_image = display.get("render_image", True)
         self.server_start_template = display.get("server_start_template", "✅ 服务器已启动: {server_name}")
+        self.shutdown_template = display.get("shutdown_template", "🔴 服务器即将关闭 ({author}, {delay}秒后)")
+        self.restart_template = display.get("restart_template", "⏰ 计划重启: 剩余 {minutes} 分钟")
+        self.alert_template = display.get("alert_template", "🚨 FiveM 服务器离线告警\n连续 {count} 次检测失败，服务器可能已离线！")
 
         self.webhook_enabled = push.get("webhook_enabled", False)
         self.webhook_port = push.get("webhook_port", 5765)
@@ -386,10 +390,9 @@ class FiveMStatusPlugin(Star):
                         self._fail_count += 1
                         if self._fail_count >= self.alert_threshold and not self._alerted:
                             self._alerted = True
-                            await self._broadcast(
-                                f"🚨 FiveM 服务器离线告警\n"
-                                f"连续 {self._fail_count} 次检测失败，服务器可能已离线！"
-                            )
+                            text = self.alert_template.format(count=self._fail_count)
+                            chain = self._render_template_chain(text)
+                            await self._broadcast_chain(chain)
                         continue
                     else:
                         if self._alerted:
@@ -416,6 +419,23 @@ class FiveMStatusPlugin(Star):
         events = data.get("data", [])
         if events:
             await self._process_and_broadcast_events(events)
+
+    @staticmethod
+    def _render_template_chain(text: str) -> MessageChain:
+        """将含 {at_all} 占位符的文本转换为 MessageChain；无 {at_all} 则为纯文本消息链"""
+        chain = MessageChain()
+        if "{at_all}" in text:
+            parts = text.split("{at_all}")
+            components = []
+            for i, part in enumerate(parts):
+                if part:
+                    components.append(Comp.Plain(part))
+                if i < len(parts) - 1:
+                    components.append(Comp.At(qq="all"))
+            chain.chain = components
+        else:
+            chain.message(text)
+        return chain
 
     def _format_event_lines(self, events: list[dict]) -> tuple[list[str], list[str]]:
         """将事件列表格式化为 (player_lines, server_lines)"""
@@ -446,18 +466,27 @@ class FiveMStatusPlugin(Star):
                 message = ev.get("message", "")
                 server_lines.append(f"  📢 管理员公告 ({author}): {message}")
             elif etype == "shutdown":
+                ts = ev.get("time")
+                t_str = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8))).strftime("%H:%M") if ts else "--:--"
                 author = ev.get("author", "txAdmin")
                 delay = ev.get("delay", 0)
                 message = ev.get("message", "")
                 delay_sec = round(delay / 1000) if delay else 0
-                msg = f"  🔴 服务器即将关闭 ({author}, {delay_sec}秒后)"
-                if message:
-                    msg += f": {message}"
-                server_lines.append(msg)
+                line = self.shutdown_template.format(
+                    author=author, delay=delay_sec, message=message, time=t_str, at_all="{at_all}",
+                )
+                if message and "{message}" not in self.shutdown_template:
+                    line += f": {message}"
+                server_lines.append(f"  {line}")
             elif etype == "restart":
+                ts = ev.get("time")
+                t_str = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8))).strftime("%H:%M") if ts else "--:--"
                 seconds = ev.get("secondsRemaining", 0)
                 minutes = round(seconds / 60)
-                server_lines.append(f"  ⏰ 计划重启: 剩余 {minutes} 分钟")
+                line = self.restart_template.format(
+                    minutes=minutes, seconds=seconds, time=t_str, at_all="{at_all}",
+                )
+                server_lines.append(f"  {line}")
 
             # ── 服务器启动事件 ──
             elif etype == "server_start":
@@ -468,6 +497,7 @@ class FiveMStatusPlugin(Star):
                     time=t_str,
                     players=ev.get("totalPlayers", 0),
                     max_players=ev.get("maxPlayers", 0),
+                    at_all="{at_all}",
                 )
                 server_lines.append(f"  {line}")
 
@@ -504,7 +534,8 @@ class FiveMStatusPlugin(Star):
         player_lines, server_lines = self._format_event_lines(events)
         if server_lines and self.notify_server_events:
             text = f"🖥️ 服务器通知 ({len(server_lines)} 条):\n" + "\n".join(server_lines)
-            await self._broadcast(text)
+            chain = self._render_template_chain(text)
+            await self._broadcast_chain(chain)
         if player_lines and self.notify_player_events:
             text = f"📡 玩家动态 ({len(player_lines)} 条):\n" + "\n".join(player_lines)
             await self._broadcast(text)

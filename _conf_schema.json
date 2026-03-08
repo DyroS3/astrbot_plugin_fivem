@@ -125,9 +125,30 @@
             "server_start_template": {
                 "description": "服务器启动通知模板",
                 "type": "string",
-                "hint": "自定义服务器启动通知的文本内容。支持占位符: {server_name}=服务器名称, {time}=启动时间, {players}=当前在线人数, {max_players}=最大玩家数",
+                "hint": "自定义服务器启动通知文本。占位符: {server_name} {time} {players} {max_players} {at_all}；加入 {at_all} 则自动 @全体成员",
                 "obvious_hint": true,
                 "default": "✅ 服务器已启动: {server_name}"
+            },
+            "shutdown_template": {
+                "description": "服务器关闭通知模板",
+                "type": "string",
+                "hint": "自定义服务器关闭通知文本。占位符: {author} {delay} {message} {time} {at_all}；加入 {at_all} 则自动 @全体成员",
+                "obvious_hint": true,
+                "default": "🔴 服务器即将关闭 ({author}, {delay}秒后)"
+            },
+            "restart_template": {
+                "description": "计划重启通知模板",
+                "type": "string",
+                "hint": "自定义计划重启通知文本。占位符: {minutes} {seconds} {time} {at_all}；加入 {at_all} 则自动 @全体成员",
+                "obvious_hint": true,
+                "default": "⏰ 计划重启: 剩余 {minutes} 分钟"
+            },
+            "alert_template": {
+                "description": "离线告警通知模板",
+                "type": "string",
+                "hint": "自定义离线告警通知文本。占位符: {count}=连续失败次数, {at_all}；加入 {at_all} 则自动 @全体成员",
+                "obvious_hint": true,
+                "default": "🚨 FiveM 服务器离线告警\n连续 {count} 次检测失败，服务器可能已离线！"
             }
         }
     },
